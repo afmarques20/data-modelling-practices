@@ -101,9 +101,9 @@ The three core fact-table patterns encode different kinds of grain:
 
 The pattern is not chosen from table size or refresh frequency. It is chosen from what a row means. See [Fact table patterns](../02-fact-tables/fact-table-patterns.md) for lifecycle and loading behavior.
 
-## Fact grain and dimension grain
+## Fact, dimension, and aggregation grain
 
-Dimensions also have grain:
+**Dimensional grain** states what one dimension row represents:
 
 - a Type 1 customer dimension is commonly one row per customer;
 - a Type 2 customer dimension is one row per historical customer version;
@@ -112,7 +112,7 @@ Dimensions also have grain:
 
 This distinction matters when counting. `COUNT(DISTINCT customer_sk)` on a Type 2 dimension counts versions, not necessarily customers. Count a durable customer key when the question is about entities.
 
-An aggregate fact table declares a higher grain than its atomic source. For example:
+**Aggregation grain** states the level at which a summary row is stored. An aggregate fact table declares a higher grain than its atomic source. For example:
 
 > One row per product category, country, and calendar month.
 
