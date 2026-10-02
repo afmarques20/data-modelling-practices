@@ -1,6 +1,24 @@
 # Domain Case Studies
 
-These four designs apply the same dimensional principles to different business realities. Each section is usable on its own, but the comparison is instructive: e-commerce emphasizes header/line grain, SaaS separates behavior from contracted state, HR makes historical context unavoidable, and banking exposes semi-additivity, bridges, and currency semantics.
+This chapter shows what dimensional modeling looks like in four familiar domains. You do not need to read every case at once. Pick the domain closest to your work, follow the row definitions, and then compare it with the others.
+
+The main lesson is simple: things that belong together in an application often need separate fact tables for analysis. One online order, for example, can create order lines today, shipment events tomorrow, a payment, and perhaps a return next week. Those records describe related but different processes.
+
+```mermaid
+flowchart LR
+    O[Order placed] --> L[Order-line facts]
+    O --> P[Payment facts]
+    L --> S[Shipment-line facts]
+    L --> R[Return-line facts]
+```
+
+The same principle appears in other domains: SaaS separates usage from subscription state and billing; HR separates employee movements from month-end headcount; banking separates account transactions from daily balances.
+
+## Notation used in the table sketches
+
+- `FK` means **foreign key**: a key that connects the fact to a dimension.
+- `DD` means **degenerate dimension**: a useful business identifier, such as an order number, kept directly in the fact because it has no separate descriptive dimension.
+- Comments after `--` describe how a measure may be aggregated.
 
 ## At a glance
 
@@ -15,7 +33,7 @@ These four designs apply the same dimensional principles to different business r
 
 ### The modeling problem
 
-An online order looks like one object in the application, but analytics sees several processes:
+An online order may look like one object on screen, but several things happen over time:
 
 - an order contains product lines;
 - lines may ship separately from different locations;
@@ -23,13 +41,13 @@ An online order looks like one object in the application, but analytics sees sev
 - discounts, tax, and freight can exist at header or line grain;
 - returns occur after sale and may refer to only part of a line.
 
-Putting all of this into one table produces row multiplication and ambiguous amounts.
+Putting all of this into one table repeats some amounts and multiplies rows. Separate facts keep each process honest about what one row means.
 
 ### Conformed dimensions
 
 Use shared Date, Customer, Product, Channel, Promotion, Currency, Geography, Fulfillment Location, and Order Status definitions where applicable. Date plays multiple roles: order, promised, shipped, delivered, paid, and returned.
 
-Customer and Product often need Type 2 history. A sold order line should retain the customer segment and product attributes valid at order time when historical-as-was reporting is required.
+Customer and Product often need Type 2 history. When a report must show the business as it was when the sale happened, an order line should retain the customer segment and product attributes that were valid at order time.
 
 ### Order-line transaction fact
 
@@ -87,7 +105,7 @@ fact_shipment_line
   shipment_line_count         -- additive
 ```
 
-One order line may produce several shipment rows. That is expected, not a duplicate. Order and shipment facts can be compared only after each is aggregated to compatible conformed dimensions.
+One order line may produce several shipment rows. For example, five ordered chairs might ship as three chairs on Monday and two on Tuesday. Those are two real shipment events, not duplicate order lines. Compare order and shipment facts only after summarizing each to the same shared headings.
 
 ### Payment transaction fact
 
@@ -110,7 +128,7 @@ fact_payment
   payment_event_count         -- additive
 ```
 
-The payment fact is normally order-level, not line-level. Do not join it directly to order lines and sum the payment amount. For product profitability, use a governed allocation or aggregate order lines and payments separately at order grain before combining.
+The payment fact is normally at order level, not line level. If a EUR 80 payment is joined directly to two order lines, the joined rows appear to contain EUR 160. For product profitability, either allocate the payment using an agreed rule or summarize both facts to order level before combining them.
 
 ### Return-line transaction fact
 
@@ -144,7 +162,7 @@ full outer join shipped s
  and s.product_key = o.product_key;
 ```
 
-Both facts are reduced to the same row headers before combination. Joining their raw rows would multiply split shipments.
+Both facts are first summarized to the same order-and-product grain. Joining their raw rows would multiply split shipments.
 
 ### Tradeoffs
 
@@ -225,7 +243,7 @@ fact_subscription_monthly_snapshot
   discount_mrr              -- semi-additive across time
 ```
 
-MRR is state at a month boundary. Sum it across accounts for one month; do not sum twelve month-end MRR values and call the result annual recurring revenue. ARR may be a governed transformation of current MRR, while recognized revenue belongs to a financial process.
+MRR is state at a month boundary. If a subscription has EUR 100 MRR in January and EUR 100 in February, its two rows do not mean EUR 200 MRR. Sum MRR across accounts for one month, not across months. ARR may be a governed transformation of current MRR, while recognized revenue belongs to a financial process.
 
 ### Subscription lifecycle snapshot
 
@@ -347,7 +365,7 @@ fact_employee_assignment_monthly_snapshot
 
 Use assignment grain, not employee grain, when simultaneous assignments are legitimate. If the business wants each person to total one across assignments, add governed allocation weights or maintain a separate person-level snapshot.
 
-Headcount is not additive across month ends. Twelve monthly rows for one employee are not twelve employees.
+Headcount is not additive across month ends. One employee present in twelve monthly snapshots is still one employee, not twelve.
 
 ### Employee movement fact
 
@@ -415,7 +433,7 @@ Processing date and effective date answer different questions. Preserve both whe
 
 ### The modeling problem
 
-Banking combines high-volume postings, end-of-period balances, changing account/customer relationships, heterogeneous products, and strict currency and audit rules. It is an ideal demonstration of why event and state models coexist.
+Banking combines high-volume postings, end-of-period balances, changing account/customer relationships, several different product types, and strict currency and audit rules. It clearly shows why event and state models coexist.
 
 ### Dimensions
 
@@ -477,7 +495,7 @@ fact_account_daily_snapshot
   account_snapshot_count       -- additive within one date
 ```
 
-Balance and flow measures intentionally coexist, but their names expose different time semantics. Summing debit amounts across days is valid; summing closing balance across days is not.
+Balance and flow measures intentionally coexist, but they behave differently through time. If an account closes Monday and Tuesday at EUR 1,000, adding those balances does not produce a meaningful EUR 2,000 balance. Debit activity, by contrast, can usually be added across days.
 
 ### Account-customer bridge
 
@@ -538,7 +556,7 @@ The one-date filter is essential. A trend query returns one balance per date rat
 - Account natural number used as the warehouse primary key across source migrations.
 - Fact tables joined directly on account and date, multiplying transactions by snapshot rows.
 
-## Cross-domain lessons
+## What the four cases have in common
 
 ### Similar nouns do not imply similar grains
 
@@ -567,7 +585,7 @@ Adoption, conversion, compliance, utilization, margin percentage, and pass rate 
 
 Joint owners, employee assignments, product promotions, and course skills may need bridges. Decide whether a report allocates to preserve totals or measures impact and permits overcounting.
 
-## Domain design review
+## Beginner design review
 
 - [ ] Every fact has an explicit one-row statement.
 - [ ] Header, line, event, payment, and snapshot grains are separate.

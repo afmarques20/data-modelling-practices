@@ -2,15 +2,23 @@
 
 > Kimball for a modern data engineer, analytics engineer, or future data architect.
 
-This repository compresses the most durable and useful ideas from Ralph Kimball and Margy Ross's *The Data Warehouse Toolkit, Third Edition* into a practical handbook. It is not a chapter-by-chapter summary. It reorganizes the material around decisions that recur in real projects: choosing a grain, separating business processes, preserving history, controlling aggregation, integrating marts, and turning source data into trustworthy analytical products.
+This handbook explains how to organize data for trustworthy reporting and analysis. It draws mainly from Ralph Kimball and Margy Ross's *The Data Warehouse Toolkit, Third Edition*.
 
-The target is roughly **95% of the book's practical modeling value** in a form that is faster to study and easier to reuse during implementation, design reviews, architecture discussions, and interviews.
+It does not follow the book chapter by chapter. Instead, it follows decisions that appear in real projects: deciding what one row means, separating business processes, preserving history, calculating totals safely, and making different datasets work together.
+
+The goal is to capture roughly **95% of the book's practical modeling value** in a form that is quicker to study and easier to reuse during implementation, design reviews, architecture discussions, and interviews.
 
 ## The rule that prevents most modeling failures
 
 Before choosing columns, write one precise sentence:
 
 > **One row represents ...**
+
+For example:
+
+> One row represents one product line on one completed order.
+
+That sentence immediately tells you that product quantity belongs on the row. An order-level delivery charge does not belong there unless you deliberately split it across the product lines.
 
 Then use Kimball's four-step design process in order:
 
@@ -19,7 +27,7 @@ Then use Kimball's four-step design process in order:
 3. **Identify the dimensions.** Which descriptive contexts apply at that exact grain?
 4. **Identify the facts.** Which numeric observations are valid at that exact grain?
 
-A plausible-looking table with ambiguous grain is still a broken model.
+If you cannot finish the sentence clearly, the table design is not ready yet.
 
 ## Recommended reading order
 
@@ -37,7 +45,7 @@ A plausible-looking table with ambiguous grain is still a broken model.
 10. [Late-arriving data](06-time-and-change/late-arriving-data.md)
 11. [Modeling workflow and decision trees](09-decision-guides/modeling-workflow-and-decision-trees.md)
 
-### Know well
+### Learn next
 
 - [Advanced fact designs](02-fact-tables/advanced-fact-designs.md)
 - [Reusable dimension patterns](03-dimensions/dimension-patterns.md)
@@ -47,7 +55,7 @@ A plausible-looking table with ambiguous grain is still a broken model.
 - [Semantic layers and governed metrics](07-modern-architecture/semantic-layer-and-metrics.md)
 - [Reliable incremental implementation](07-modern-architecture/reliable-implementation.md)
 
-### Recognize
+### Read later or recognize
 
 - Hybrid SCD types, outriggers, hot-swappable dimensions, and audit dimensions
 - Shrunken dimensions, aggregate navigation, timespan facts, and complex snapshot variants

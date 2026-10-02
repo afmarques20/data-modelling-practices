@@ -1,14 +1,23 @@
 # Layered Architectures: Medallion, Data Vault, and Kimball
 
-Medallion, Data Vault, and dimensional modeling are often presented as competing choices. Usually they answer different questions:
+Imagine an online shop receives an order. The same order may appear in several useful forms:
+
+1. the original message, kept so it can be replayed;
+2. a cleaned record with valid types and a resolved customer;
+3. an order-line fact that analysts can safely total;
+4. a governed `Net Sales` metric used by dashboards.
+
+Those forms are not unnecessary copies. Each one has a different job.
+
+Medallion, Data Vault, and dimensional modeling are sometimes presented as competing choices. In practice, they usually answer different questions:
 
 - **Medallion:** how does data become progressively cleaner and more useful?
 - **Data Vault:** how can integrated source history remain auditable and resilient to change?
 - **Kimball dimensional modeling:** how should business-facing analytical data be shaped for understandable, correct analysis?
 
-The useful architecture question is not “which label wins?” It is “what responsibility does each layer have, and where is business meaning made consumable?”
+The useful question is therefore not “which label wins?” Ask instead: “What job does each layer perform, and where does raw data become understandable business data?”
 
-## The durable separation of concerns
+## One flow, several responsibilities
 
 ```mermaid
 flowchart LR
@@ -19,19 +28,21 @@ flowchart LR
     M --> C[BI, analytics, data products, AI]
 ```
 
-The physical implementation can use tables, views, files, streams, or managed pipelines. The responsibilities still matter:
+The boxes can be tables, views, files, streams, or managed pipelines. Their responsibilities still matter:
 
-1. retain source evidence;
-2. standardize and integrate it;
-3. declare business process and grain;
-4. expose conformed dimensions and safe measures;
-5. govern consumer-facing semantics.
+1. keep a replayable copy of what the source sent;
+2. clean the data and connect records that refer to the same thing;
+3. state what each analytical row represents;
+4. publish shared dimensions and measures that aggregate correctly;
+5. give business metrics one governed meaning.
 
 ## Medallion architecture
 
 [Databricks describes medallion](https://docs.databricks.com/aws/en/lakehouse/medallion) as progressive data-quality layers commonly named Bronze, Silver, and Gold.
 
 ### Bronze: source fidelity
+
+Bronze is the closest layer to the source. **Source fidelity** means preserving what arrived, even when it is incomplete or awkward.
 
 Typical responsibilities:
 
@@ -40,15 +51,17 @@ Typical responsibilities:
 - support replay, audit, and schema-drift investigation;
 - quarantine unreadable data without losing evidence.
 
-Bronze grain is normally the source delivery grain, which may not be a valid analytical grain. Do not expose it as a trusted business model merely because it is queryable.
+One Bronze row usually means whatever one source delivery row or message meant. That may not be a useful analytical grain. A table being queryable does not make it a trusted business model.
 
 ### Silver: cleaning and integration
+
+Silver turns source-shaped data into dependable reusable data. For example, it may parse `"80.00"` into a number, remove a retried order message, and map two source customer IDs to one customer identity.
 
 Typical responsibilities:
 
 - parse types and standardize codes;
 - deduplicate source records;
-- apply CDC and delete semantics;
+- apply change data capture (CDC) and delete semantics;
 - reconcile identifiers across sources;
 - enforce quality rules;
 - preserve or construct integrated history.
@@ -56,6 +69,8 @@ Typical responsibilities:
 Silver can contain normalized integration tables, Data Vault structures, cleaned event streams, or other reusable models. It is not required to be one specific schema style.
 
 ### Gold: business-facing data products
+
+Gold is designed for a business question or consumer. An order-line star with `net_sales_amount`, Product, Customer, and Date is a typical Gold model.
 
 Typical responsibilities:
 
@@ -82,13 +97,13 @@ The labels do not tell you:
 
 Those remain modeling and governance decisions.
 
-## Data Vault overview
+## Optional: Data Vault overview
 
-Data Vault organizes integrated history around business keys, relationships, and descriptive change.
+Data Vault is most relevant when many changing sources must be integrated with strong audit history. If you are learning the basics, remember only this idea: it separates stable business identities, their relationships, and their changing descriptions.
 
 ### Hubs
 
-A hub represents a stable business concept identified by a business key.
+A hub stores a stable business identity, such as customer `C-1042`. It does not try to hold the customer's changing name, segment, or address.
 
 ```text
 hub_customer
@@ -100,7 +115,7 @@ hub_customer
 
 ### Links
 
-A link represents a relationship or transaction association among hubs.
+A link records a relationship between business identities. For example, it can say that customer `C-1042` is connected to subscription `S-88`.
 
 ```text
 link_customer_subscription
@@ -113,7 +128,7 @@ link_customer_subscription
 
 ### Satellites
 
-A satellite stores descriptive context and history for a hub or link.
+A satellite stores descriptions that can change, such as the customer's name, segment, or country, together with their history.
 
 ```text
 sat_customer_profile
@@ -126,12 +141,12 @@ sat_customer_profile
   country
 ```
 
-Precise conventions vary across Data Vault methods and implementations. The important architectural idea is separation: business identity, relationships, and evolving descriptive context are loaded independently and retain source lineage.
+Precise conventions vary across Data Vault methods and implementations. The important idea is the separation: identity, relationships, and changing descriptions are loaded independently, while retaining where each assertion came from.
 
 ### Raw Vault and Business Vault
 
-- **Raw Vault** prioritizes auditable source-derived history and parallel loading.
-- **Business Vault** adds governed calculations, identity resolution, survivorship, and other reusable business rules.
+- **Raw Vault** keeps source-derived history in a form that can be traced back to the source.
+- **Business Vault** adds reusable business rules, such as deciding that two source records represent the same customer or choosing the preferred value when sources disagree.
 - **Information marts** reshape the integrated history for consumers, often as dimensional facts and dimensions.
 
 The [Data Vault Alliance introduction](https://datavaultalliance.com/engineering/data-vault-2-0-an-introduction/) and an [AWS implementation guide](https://aws.amazon.com/blogs/big-data/design-and-build-a-data-vault-model-in-amazon-redshift-from-a-transactional-database/) both describe dimensional information marts as a natural downstream consumption form.
@@ -182,7 +197,7 @@ This is a strong default when the organization does not need a formal enterprise
 Bronze / staging -> Raw Vault -> Business Vault -> dimensional Gold marts -> semantic layer
 ```
 
-Use this when auditability, many changing sources, parallel ingestion, and long-lived integrated history justify the additional structures.
+Use this when traceability, many changing sources, parallel loading, and long-lived integrated history justify the extra structures. It is usually unnecessary for a small project with a few stable sources.
 
 ### Dimensional models without a persistent integration layer
 
@@ -190,11 +205,11 @@ Smaller teams may build dimensional marts directly from cleaned source staging. 
 
 ### Wide marts or semantic graphs
 
-Some dbt-style projects expose wide entity-grained marts, and semantic engines may resolve joins dynamically. These can preserve Kimball's durable principles — clear grain, governed keys, consistent history, and safe measures — without a physically obvious star. Do not confuse physical shape with semantic discipline.
+Some dbt-style projects expose wide entity-grained marts, and semantic engines may resolve joins dynamically. These can preserve the same lasting principles — clear grain, governed keys, consistent history, and safe measures — without a physically obvious star. Do not confuse table shape with modeling discipline.
 
 ## Architecture decision guide
 
-### Start with the consumption requirement
+### Start with the question people need to answer
 
 Ask:
 
@@ -202,7 +217,7 @@ Ask:
 2. What is the atomic grain of each process?
 3. Which historical truth must be retained?
 4. How many sources and identity conflicts exist?
-5. Must prior loads and source assertions be independently auditable?
+5. Must the team be able to reconstruct exactly what each source said at an earlier time?
 6. What latency, cost, and team skills constrain the design?
 
 ### Add layers only when they own a responsibility
@@ -212,14 +227,14 @@ Ask:
 | Replay after faulty transformation | Immutable/replayable landing data |
 | Simple cleanup from a few stable sources | Silver integration models may be sufficient |
 | Auditable multi-source enterprise history | Consider Raw/Business Vault |
-| Usable BI and slice-and-dice | Dimensional marts or an equally explicit semantic contract |
+| Usable BI and flexible filtering/grouping | Dimensional marts or equally clear semantic rules |
 | Consistent KPIs across tools | Governed semantic/metric layer |
 
-Adding a layer because a diagram looks complete creates latency and ownership ambiguity. Omitting a necessary responsibility pushes hidden complexity into every downstream team.
+Adding a layer just because an architecture diagram looks complete creates more work and more places for logic to drift. Omitting a necessary responsibility pushes that work into every downstream team.
 
-## Timeless principle versus older implementation detail
+## Principles that survive technology changes
 
-| Timeless modeling principle | Technology-contingent detail |
+| Lasting modeling principle | Technology-specific choice |
 |---|---|
 | Declare grain before facts and dimensions | Whether each star is physically materialized |
 | Preserve atomic data somewhere trustworthy | Whether it lives in an RDBMS, object store, or lakehouse table |
@@ -228,7 +243,7 @@ Adding a layer because a diagram looks complete creates latency and ownership am
 | Make aggregation behavior explicit | Whether aggregates are tables, materialized views, cubes, or cache |
 | Keep source lineage and restartability | Exact orchestration and storage technology |
 
-Cheap storage and elastic compute reduce some physical constraints. They do not make mixed grain, double counting, or ambiguous history correct.
+Cheap storage and elastic compute make some implementation choices easier. They do not make mixed grain, double counting, or unclear history correct.
 
 ## Common mistakes
 
@@ -245,7 +260,7 @@ Cheap storage and elastic compute reduce some physical constraints. They do not 
 
 More layers can improve isolation, audit, and reuse, but also add latency, cost, deployment dependencies, and places where logic can diverge. A Data Vault can absorb source change elegantly, but requires specialized skill and an intentional mart-generation strategy. Direct dimensional delivery is simpler, but integration and source-history rules must still live somewhere durable.
 
-Architect for explicit responsibility, not maximum terminology.
+Use only the layers whose responsibilities you can explain and own.
 
 ## Related patterns
 
@@ -262,3 +277,4 @@ Architect for explicit responsibility, not maximum terminology.
 4. Dimensional marts can sit downstream of either Silver tables or a Business Vault.
 5. Physical stars may be replaced by views or semantic models, but grain, history, conformance, and aggregation rules remain.
 6. Every layer must have a clear owner and responsibility.
+7. For a small team, replayable source data, a dependable cleaning layer, dimensional marts, and governed metrics are often enough; add Data Vault only for a clear need.

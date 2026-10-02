@@ -1,8 +1,17 @@
 # Measures and Aggregation Behavior
 
-A measure is useful only when its aggregation behavior is understood. Many wrong dashboards use correct rows and valid joins but apply the wrong arithmetic.
+A measure is a numeric value such as quantity, revenue, duration, or balance. Storing the number is only half the job; we must also say how it can be combined.
 
-## The problem
+Consider one bank account with these daily closing balances:
+
+| date | closing balance |
+|---|---:|
+| Monday | EUR 100 |
+| Tuesday | EUR 120 |
+
+Adding them gives EUR 220, but that number is not the balance on either day and does not describe a useful two-day balance. The useful answers may be “EUR 120 at Tuesday close” or “EUR 110 average daily balance.” SQL can calculate all three values, so the model must tell users which calculation has business meaning.
+
+## Why correct numbers can produce a wrong answer
 
 SQL makes `SUM` and `AVG` easy. It does not know whether they make business sense.
 
@@ -14,9 +23,9 @@ SQL makes `SUM` and `AVG` easy. It does not know whether they make business sens
 
 The database can return a precise number for every one of these calculations. Measure design determines whether the number is meaningful.
 
-## Mental model
+## A simple way to think about it
 
-Every measure needs a contract:
+For each measure, write down:
 
 ```text
 measure meaning
@@ -24,8 +33,8 @@ measure meaning
 + valid aggregation dimensions
 + time behavior
 + unit and currency
-+ null / zero semantics
-= trustworthy metric input
++ meaning of null and zero
+= a number that can be used safely
 ```
 
 Ask:
@@ -46,11 +55,13 @@ For a banking snapshot:
 
 > **One row represents one account in one currency at the close of one business date.**
 
-`closing_balance` fits. Its valid time aggregation is constrained by the snapshot semantics.
+`closing_balance` fits, but it cannot normally be summed across snapshot dates.
 
 Before choosing `SUM`, `AVG`, or another function, verify the [grain](grain.md).
 
-## The three aggregation classes
+## Three ways measures behave
+
+The technical terms are **additive**, **semi-additive**, and **non-additive**. They simply describe where summing is safe.
 
 ### Additive measures
 
@@ -154,7 +165,7 @@ The correct model stores or makes available:
 The rate is calculated after aggregation:
 
 ```sql
-sum(paid_conversion_count)
+1.0 * sum(paid_conversion_count)
 / nullif(sum(trial_count), 0)
 ```
 
@@ -229,7 +240,7 @@ An account snapshot can include both:
 | `credit_amount_during_day` | Flow during day | Sum across days |
 | `transaction_count_during_day` | Flow during day | Sum across days |
 
-Name the time semantics. A generic `amount` column invites misuse.
+Name what the value means over time. A generic `amount` column invites misuse.
 
 ## Worked examples
 
@@ -253,7 +264,7 @@ completion rate = SUM(completion_count) / SUM(assigned_activity_count)
 normalized score = SUM(score_points) / SUM(possible_points)
 ```
 
-The assignment denominator may come from a separate coverage fact. Aggregate activity and coverage to matching conformed dimensions before combining them.
+The assignment denominator may come from a separate coverage fact. First aggregate activity and coverage to matching shared dimensions, then combine them. These consistently defined shared dimensions are called **conformed dimensions**.
 
 ### E-commerce
 
@@ -393,7 +404,7 @@ Atomic components increase column count and may require semantic formulas, but t
 
 Exact distinct counts and percentiles can be computationally expensive. Aggregates and sketches improve responsiveness but constrain dimensions or introduce approximation. Preserve an authoritative path to exact results for reconciliation where the business risk requires it.
 
-## Modern implementation notes — later synthesis
+## Optional: modern implementation notes
 
 The additive, semi-additive, and non-additive classification is Kimball-derived. The implementation mappings below are modern synthesis.
 
@@ -428,7 +439,7 @@ Syntax differs by product. The contract should not.
 Prefer safe division:
 
 ```sql
-sum(numerator) / nullif(sum(denominator), 0)
+1.0 * sum(numerator) / nullif(sum(denominator), 0)
 ```
 
 Aggregate facts to their own grain before joining them. Use window functions for period-end or rolling behavior only after the base rows are correctly grouped.

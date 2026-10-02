@@ -1,12 +1,21 @@
 # Reusable Dimension Patterns
 
-Most dimensions are wide, descriptive tables with one surrogate-keyed row per member or historical member version. The patterns here solve recurring exceptions: one dimension used in several roles, identifiers with no descriptive table, clusters of flags, fast-changing profiles, selective dimension-to-dimension relationships, alternative classifications, and load lineage.
+Most dimensions are straightforward: one row describes one customer, product, employee, date, or historical version. Occasionally that basic shape becomes awkward.
+
+For example:
+
+- one order has an order date, ship date, and delivery date, but all three use the same calendar;
+- an order number is useful for search, but has no extra attributes that justify an `order` dimension;
+- several small yes/no flags would create a clutter of one-column dimensions;
+- a few customer profile attributes change far more often than the rest of the customer record.
+
+The patterns in this chapter give names to solutions for those situations. Use them as a reference rather than a list to memorize.
 
 The first question remains the same:
 
 > What exactly does one dimension row represent, and is that description true for every fact row that references it?
 
-## Pattern selection at a glance
+## Choose a pattern from the problem
 
 | Requirement | Pattern |
 |---|---|
@@ -19,13 +28,15 @@ The first question remains the same:
 | Different users need private classifications over the same facts | Hot-swappable dimension |
 | Users need load, lineage, or quality context | Audit dimension |
 
+The first four patterns are the most useful starting points. Outriggers, shrunken dimensions, hot-swappable dimensions, and audit dimensions solve more specialized needs and can be read when those needs appear.
+
 ## Role-playing dimensions
 
 ### The problem
 
 An order has an order date, promised date, ship date, and delivery date. Creating four separately maintained calendar tables would duplicate logic and invite inconsistent fiscal definitions.
 
-### Mental model
+### A simple way to think about it
 
 **One physical dimension, several named jobs.**
 
@@ -69,7 +80,7 @@ Roles simplify governance but add semantic aliases. Hide physical implementation
 
 An order number or invoice number is valuable for grouping, search, and drill-through, yet after header attributes are placed on the line-level fact there may be no descriptive columns left to justify a separate dimension table.
 
-### Mental model
+### A simple way to think about it
 
 **A dimension identifier without a dimension table.**
 
@@ -112,7 +123,7 @@ Degenerate identifiers can be high-cardinality and affect compression, but their
 
 Transactions often carry several small flags and indicators: payment retry status, fraud-review flag, delivery exception type, coupon-used indicator, and acquisition channel. Separate one-column dimensions clutter the fact, while raw codes are poor report labels.
 
-### Mental model
+### A simple way to think about it
 
 **A tidy profile for miscellaneous low-cardinality context.**
 
@@ -152,7 +163,7 @@ A junk dimension reduces foreign keys and centralizes decoding, but combinations
 
 A dimension with millions of members contains a volatile cluster such as risk band, usage band, engagement tier, income band, or propensity score. Tracking every profile change as Type 2 can cause excessive version growth.
 
-### Mental model
+### A simple way to think about it
 
 **Separate the fast-changing profile from the stable identity.**
 
@@ -177,7 +188,7 @@ The periodic fact captures the profile key at each month without spawning a new 
 
 ### Use / avoid
 
-Use when the volatile attributes are queried together, can be discretized into stable bands, and a fact or relationship exists at every required observation point. Avoid it when exact continuous values must be preserved, when profile changes occur without any fact row and point-in-time reconstruction is required, or when only a few low-volatility attributes are involved.
+Use when the fast-changing attributes are queried together, can be grouped into stable bands, and a fact or relationship exists at every required observation point. Avoid it when exact values must be preserved, when profiles change without any fact row and point-in-time reconstruction is required, or when only a few slow-changing attributes are involved.
 
 In the change-without-fact case, add an effective-dated entity-to-profile factless relationship. A Type 5 variant may place the current mini-profile key on the base dimension for current-only browsing, but label current attributes distinctly.
 
@@ -196,7 +207,7 @@ Mini-dimensions control Type 2 growth but add foreign keys, band governance, and
 
 Occasionally a coherent attribute set has a genuinely different grain or lifecycle from the base dimension. Repeating a large, low-cardinality set on every base row may be wasteful or difficult to maintain.
 
-### Mental model
+### A simple way to think about it
 
 **A dimension referenced by another dimension - an exception, not the default.**
 
@@ -229,7 +240,7 @@ Outriggers can reduce repetition, but they complicate navigation and can create 
 
 An atomic sales fact uses day and product, while a forecast fact is recorded by month and brand. The forecast cannot reference atomic day and SKU rows, but it still needs to align with sales on shared rollups.
 
-### Mental model
+### A simple way to think about it
 
 **A governed subset or rollup of a base conformed dimension.**
 
@@ -260,9 +271,9 @@ Shrunken dimensions make higher-grain facts honest, but require synchronized gov
 
 ### The problem
 
-Several constituencies analyze the same immutable facts but apply different, possibly proprietary classifications. For example, investment teams may assign their own sectors and risk tags to the same securities.
+Different teams may analyze the same unchanged facts but apply different, possibly private classifications. For example, investment teams may assign their own sectors and risk tags to the same securities.
 
-### Mental model
+### A simple way to think about it
 
 **Same fact contract, replaceable classification lens.**
 
@@ -298,7 +309,7 @@ This pattern offers strong isolation and reuse of facts, but multiplies governan
 
 Analysts and operators may need to know which pipeline run created a row, which rule set was used, and whether a quality exception occurred.
 
-### Mental model
+### A simple way to think about it
 
 **Describe the production context of a fact row.**
 
@@ -331,7 +342,7 @@ Use when lineage, reconciliation, release status, or quality categories are anal
 
 Audit dimensions improve traceability and compliance, but add storage and governance. Keep them understandable and low-cardinality.
 
-## Additional patterns to recognize
+## Optional: additional patterns to recognize
 
 ### Very large dimensions
 
@@ -387,7 +398,7 @@ Dimensions can include source, pipeline, rule, field, severity, and date; facts 
 
 A causal dimension records the conditions believed to influence an event: campaign, offer, experiment treatment, price rule, or promotion. Its grain is one governed causal condition or combination, and the fact key records the condition active at the event. This supports correlation and attribution analysis; it does not by itself prove causation. Keep exposure/eligibility in factless facts when the condition can exist without a resulting transaction.
 
-## Modern implementation notes
+## Optional: modern implementation notes
 
 - Semantic layers should expose roles and friendly labels while hiding surrogate keys and bridge mechanics.
 - dbt-style projects can generate role-playing views from one dimension model and test junk or mini-dimension combination keys for uniqueness.

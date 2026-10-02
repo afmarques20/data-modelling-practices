@@ -1,10 +1,31 @@
 # Hierarchies
 
-Hierarchies describe how detailed members roll up: product to category, city to region, employee to manager, account to parent account, or component to assembly. The right physical pattern depends on whether levels are fixed and meaningful, depth varies, parents can be shared, and historical structures must be preserved.
+Hierarchies describe how detail rolls up into larger groups. A product belongs to a subcategory, category, and department. An employee reports to a manager, who may report to another manager. A city belongs to a region and country.
+
+The best table design depends mainly on one question: **is the path short and predictable, or can it keep changing and growing?**
+
+## Start with a product
+
+Suppose the shop sells a wireless keyboard:
+
+```mermaid
+flowchart LR
+    P[Wireless keyboard] --> S[Keyboards]
+    S --> C[Computer accessories]
+    C --> D[Electronics]
+```
+
+These levels have clear names and every product follows the same path. The simplest analytical design is to store the whole path on each product row:
+
+| product_name | subcategory_name | category_name | department_name |
+|---|---|---|---|
+| Wireless keyboard | Keyboards | Computer accessories | Electronics |
+
+A report can now group sales by product, subcategory, category, or department with one join to the product dimension.
 
 ## The problem
 
-Users want to move between detail and summary without learning recursive SQL or interpreting generic `level_1` columns. Meanwhile, organizations reorganize, product taxonomies change, and charts of accounts are restated.
+Users want to move between detail and summary without learning recursive SQL or guessing what generic `level_1` columns mean. The challenge is that some structures are stable, while others change: employees move between managers, product taxonomies are revised, and accounts are reorganized.
 
 A hierarchy model must answer four questions:
 
@@ -13,11 +34,11 @@ A hierarchy model must answer four questions:
 3. Can one child have more than one parent?
 4. Which version of the hierarchy applies to historical facts?
 
-## Mental model
+## Choose the simplest pattern that fits
 
 - **Fixed and named levels:** flatten them into the dimension.
 - **Slightly ragged but bounded:** flatten with an explicit padding rule.
-- **Deep, recursive, shared, or changeable:** use a parent-child representation for maintenance and often a hierarchy bridge for analytics.
+- **Deep, recursive, shared, or frequently changing:** store each node's parent and often build a hierarchy bridge for easier analytics.
 
 ## Simple fixed-depth hierarchies
 
@@ -40,7 +61,7 @@ Each row carries its complete, many-to-one rollup path:
 
 ### Why flattening works
 
-Brand, subcategory, category, and department are all true for the SKU row. Repeating their labels costs little compared with a large fact table and gives users one join, meaningful filters, and simple `GROUP BY` expressions. Modern column stores compress repeated low-cardinality values well.
+Brand, subcategory, category, and department all describe the SKU. Repeating those labels makes the table wider, but gives users one join, clear filters, and simple `GROUP BY` expressions. Modern column stores usually compress repeated values well.
 
 ### When flattening is better than normalization
 
@@ -52,7 +73,7 @@ Flatten when:
 - users frequently group and filter by the levels;
 - one governed hierarchy version applies to the row's validity period.
 
-Do not snowflake department, category, and brand merely to remove repeated text. Normalization may simplify operational updates, but the presentation model's job is understandable, reliable analytics.
+Do not split department, category, and subcategory into separate tables only to avoid repeated text. That normalization may help an operational system, but an analytical model should make reporting easy and reliable.
 
 ### Multiple hierarchies
 
@@ -61,13 +82,13 @@ One dimension can carry several independent rollups. A date dimension may contai
 - `geography_country` → `geography_region` → `geography_city`;
 - `operations_division` → `operations_area` → `operations_store`.
 
-Avoid assuming that similarly named levels form a hierarchy. City alone does not uniquely determine state or country in many datasets; use complete, governed attributes.
+Do not assume that similarly named values define a valid path. For example, several countries can contain a city named Springfield. Store the complete, governed hierarchy attributes.
 
 ## Slightly ragged hierarchies
 
 ### The problem
 
-Some geographies have city → state → country, while others add district or province. The depth varies only within a narrow, known range.
+Some countries use city → state → country, while others insert a district or province. This is called a **ragged hierarchy** because not every path has the same number of levels.
 
 ### Grain
 
@@ -75,23 +96,32 @@ Some geographies have city → state → country, while others add district or p
 
 ### Padding choices
 
-Business owners must decide how missing levels appear in reports:
+Business owners must decide what a missing level looks like in a report. For a location with no state or province, they can:
 
 - repeat the nearest lower-level member upward;
 - repeat a higher-level member downward;
 - use a clear `Not Applicable` label.
 
-Choose by visualizing totals at each report level. The rule must preserve complete rollups and produce labels users understand.
+Test the options in a real report before choosing. The rule should keep every location in the totals and use labels that readers understand.
 
 ### When not to flatten
 
-Do not hide a wildly variable hierarchy behind `level_1` through `level_12`. Generic levels have no stable meaning, and adding depth becomes a schema change. If level names cannot be explained, use a recursive or bridge-based pattern.
+Do not hide a highly variable hierarchy behind `level_1` through `level_12`. Those columns have no stable meaning, and every extra level requires a schema change. If the levels cannot be named clearly, use a parent-child or bridge-based pattern.
 
 ## Parent-child hierarchies
 
 ### The problem
 
-Organization charts, charts of accounts, customer ownership trees, and bills of materials can have unpredictable depth.
+An organization chart can have two management levels in one branch and eight in another. Charts of accounts, ownership trees, and bills of materials can vary in the same way.
+
+In that case, store each node with its immediate parent:
+
+| organization | immediate parent |
+|---|---|
+| Company | — |
+| Sales | Company |
+| Iberia Sales | Sales |
+| Lisbon Team | Iberia Sales |
 
 ### Adjacency-list grain
 
@@ -105,7 +135,7 @@ Organization charts, charts of accounts, customer ownership trees, and bills of 
     ├── node_type
     └── SCD metadata ...
 
-This adjacency-list form is compact and easy to maintain. Recursive common table expressions can traverse it. It is often suitable for controlled applications and modest trees.
+This design is called an **adjacency list**. It is compact and easy to update. A recursive SQL query can follow the parent links, so it works well for controlled applications and modest trees.
 
 ### Limitations
 
@@ -121,15 +151,26 @@ Use durable node keys for structural relationships when descriptive Type 2 chang
 
 ### The problem
 
-Users need fast ancestor-to-descendant analysis across a ragged hierarchy without recursive query logic.
+Suppose a report selects `Sales` and needs all amounts posted to `Sales`, `Iberia Sales`, and `Lisbon Team`. Following parent links every time can be difficult for users and BI tools.
+
+A **hierarchy bridge**, also called a **closure table**, stores every reachable ancestor–descendant pair in advance:
+
+```mermaid
+flowchart TB
+    CO[Company] --> SA[Sales]
+    SA --> IB[Iberia Sales]
+    IB --> LI[Lisbon Team]
+```
+
+For this small tree, the bridge includes `Company → Lisbon Team`, `Sales → Lisbon Team`, and `Iberia Sales → Lisbon Team`, as well as a self-row such as `Lisbon Team → Lisbon Team`.
 
 ### Grain
 
 > One bridge row represents one ancestor-to-descendant path within one hierarchy version and effective period.
 
-In a strict tree there is only one path between an ancestor and descendant, so hierarchy version plus ancestor plus descendant can be unique. In a graph with shared parents, retain a path identifier or pre-aggregate all valid paths to one ancestor-descendant row with a governed combined weight.
+In a strict tree, there is only one path between an ancestor and a descendant. The hierarchy version, ancestor, and descendant can therefore identify a row. If a node can have several parents, keep a path identifier or combine paths using an agreed weighting rule.
 
-Include a self-path for every node at depth zero. A 13-node tree therefore has more than 13 bridge rows because every ancestor is paired with every reachable descendant.
+Include a self-path for every node at depth zero. This lets a selected parent include facts posted directly to itself. A 13-node tree has more than 13 bridge rows because each ancestor is paired with every descendant it can reach.
 
 ### Model
 
@@ -153,11 +194,11 @@ Example:
 
 ### Why this works
 
-The bridge expands the recursive structure during data processing. A query constrains one ancestor and directly reaches all descendant fact rows. Depth supports immediate-child versus all-descendant analysis; flags can identify roots and leaves.
+The data pipeline follows the tree once and writes all paths into the bridge. A report then selects one ancestor and joins directly to its descendant facts. `depth = 1` means an immediate child; larger values mean lower descendants. Flags can identify top-level roots and bottom-level leaves.
 
 ### Query discipline
 
-Constrain the ancestor role to the intended member before aggregating. An unconstrained closure bridge associates one fact with every ancestor in its path, so totals across ancestors will repeat descendants by design.
+Select the intended ancestor before summing. Without that filter, one fact joins to every ancestor above it and is repeated by design.
 
 For a selected organization:
 
@@ -178,9 +219,11 @@ If a filter can select several overlapping ancestors, first derive the distinct 
 
 ## Shared ownership and graph structures
 
-A bill of materials can use one component in several assemblies. A legal entity may be 60% owned by one parent and 40% by another. This is no longer a strict tree.
+A strict tree gives every child one parent. A bill of materials may instead use one component in several assemblies, and a legal entity may be 60% owned by one parent and 40% by another. This structure is a **graph**, not a tree.
 
-Add an ownership or path weight when measures must be allocated. The product of edge weights along a path determines the ancestor-to-descendant path weight; if several independent paths connect the same pair, the business rule must specify whether to sum, choose, or report them separately.
+Add an ownership or path weight only when a measure must be allocated. Multiply the weights along a path to get the ancestor's final share. If several paths connect the same pair, the business must decide whether to add those paths, choose one, or report them separately.
+
+For example, if Parent A owns 50% of Company B and Company B owns 40% of Company C, Parent A's indirect share of Company C is `50% × 40% = 20%`.
 
 Weighted rollup:
 
@@ -190,7 +233,7 @@ Unweighted rollup is an **impact view** and may associate the full amount with s
 
 Do not invent ownership weights for convenience. Bills of materials may need quantities rather than percentages, and organizational accountability may be non-allocatable.
 
-## Time-varying hierarchies
+## Advanced: time-varying hierarchies
 
 ### The problem
 
@@ -201,14 +244,14 @@ An employee moves to a new manager, a cost center is reorganized, or an account 
 
 ### Model
 
-Add `valid_from` and `valid_to` to the hierarchy relationship or to closure paths. Use half-open, non-overlapping periods. Every historical query must freeze the hierarchy at one explicit instant.
+Add `valid_from` and `valid_to` to the hierarchy relationship or to the stored paths. Each period includes its start and excludes its end, and periods must not overlap. Every historical query must choose one explicit point in time.
 
-Two common presentations are useful:
+Two report views are common:
 
 - **As-was hierarchy:** choose the path valid at the fact event or snapshot date.
 - **As-is hierarchy:** choose the current path and intentionally restate all history.
 
-Name these perspectives. A generic “organization hierarchy” that silently changes interpretation is unsafe.
+Name these views clearly. A generic “organization hierarchy” that silently switches between them is unsafe.
 
 ### Interaction with Type 2 dimensions
 
@@ -223,7 +266,7 @@ Durable entity keys in the bridge usually prevent unrelated Type 2 changes from 
 
 A retroactive reorganization can require closing old paths, inserting corrected paths, and rebuilding the transitive closure for only affected subtrees and periods. Reconcile ancestor totals before and after the repair, and retain the processing audit. Never leave overlapping active hierarchy versions.
 
-## Alternative implementations
+## Optional: alternative implementations
 
 ### Recursive CTE over parent pointers
 
@@ -241,7 +284,7 @@ Left/right interval labels make subtree reads fast but make structural changes e
 
 Graph engines and semantic platforms can navigate complex structures elegantly. They do not remove the need to define version, allocation, and counting semantics. Persisting a curated relational bridge may still improve reproducibility and portability.
 
-## Pattern choice
+## Quick pattern guide
 
 | Situation | Default pattern |
 |---|---|
@@ -306,13 +349,23 @@ Assemblies and components form a recursive, often shared graph. The bridge may s
 
 Flattened dimensions offer the simplest queries and best usability but handle only known, meaningful levels. Parent pointers are compact and easy to update but harder to query. Closure bridges make arbitrary rollups fast and flexible at the cost of more rows, more load logic, and overcounting risk. Native graphs improve traversal but do not solve business semantics automatically.
 
-## Modern implementation notes
+## Optional: modern implementation notes
 
 - Generate closure tables incrementally only after cycle and orphan checks; a periodic full reconciliation can detect missed paths.
 - In dbt-style transformations, test self-path existence, unique ancestor/descendant/version grain, valid depth, no cycles, and non-overlapping effective periods.
 - Columnar warehouses compress integer closure paths well, but very broad/deep graphs can still be large. Materialize only hierarchies used for analytics.
 - SAP HANA and Datasphere can expose hierarchies semantically. Keep the underlying grain and version rules explicit, and validate aggregate behavior when nodes have multiple parents.
 - In the semantic layer, publish named hierarchies with ordered levels for fixed paths and governed ancestor parameters for bridges. Hide raw bridge fields from casual users.
+
+## Beginner review checklist
+
+- [ ] Can I name every fixed hierarchy level in business language?
+- [ ] Does each child have one parent, or can parents be shared?
+- [ ] Can the depth vary enough to make fixed columns confusing?
+- [ ] If I use a bridge, does every node have a depth-zero self-row?
+- [ ] Does the report select one ancestor before summing descendants?
+- [ ] For historical reporting, is the hierarchy frozen at one stated time?
+- [ ] Are weighted allocation and unweighted impact views clearly separated?
 
 ## What to remember
 

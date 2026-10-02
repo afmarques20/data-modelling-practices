@@ -1,12 +1,25 @@
 # Grain
 
-Grain is the semantic contract of a table. It answers the most important modeling question:
+Grain means **exactly what one row represents**. It is the first thing to decide when designing a table.
+
+Imagine this order:
+
+| order_number | line_number | product | quantity |
+|---|---:|---|---:|
+| 9001 | 1 | Keyboard | 2 |
+| 9001 | 2 | Mouse | 1 |
+
+The table's grain is **one row per order line**. Order 9001 appears twice because it contains two different lines. That is not duplication; it is the intended meaning of the rows.
+
+Now suppose the order has one EUR 12 shipping charge. Copying that charge onto both rows would make a simple sum return EUR 24. The shipping charge is true at order grain, not order-line grain.
+
+This is why the most important modeling question is:
 
 > **What exactly does one row represent?**
 
-If that sentence is vague, the dimensions, measures, joins, tests, and dashboards built on the table will also be vague. A fast table with an ambiguous grain is still an incorrect model.
+If the answer is vague, joins and totals become difficult to trust. A table can be fast and still be wrong because its rows do not have one clear meaning.
 
-## The problem
+## Why grain problems happen
 
 Source systems rarely arrive with analytical grain already made explicit. An order header, order lines, payments, shipments, and status changes may all be available in one extract. A learning platform may emit starts, completions, assessment attempts, and daily progress. Combining these records because they share identifiers creates tables in which a row can mean several things.
 
@@ -19,18 +32,18 @@ The usual symptoms are familiar:
 - null-heavy columns appear because only some event types have each measure;
 - incremental loads cannot decide whether to insert, update, or ignore a record.
 
-These are often grain failures, not SQL failures.
+These are often grain problems rather than SQL problems. Rewriting the query may hide a symptom, but it does not clarify what the rows mean.
 
-## Mental model
+## A simple way to think about it
 
-Treat grain as a promise:
+Treat the grain statement as a promise to every person who uses the table:
 
-> Given the declared identifying dimensions and business identifiers, this table contains one row for one occurrence of the stated business event or state.
+> Each row is one occurrence of the event or state named in the grain, identified by the stated dimensions and business identifiers.
 
-A useful formula is:
+A useful writing aid is:
 
 ```text
-grain = business process + unit of observation + time or lifecycle qualifier
+grain = business process + unit of observation + time or lifecycle detail
 ```
 
 Good declarations are complete sentences:
@@ -65,7 +78,7 @@ Use these questions in a design workshop:
 5. Which source record or combination of records proves the observation happened?
 6. Which measures are true for every row at this grain?
 
-Write the answer before drawing the schema.
+Write the answer before drawing the schema. If a proposed column is not true for every row at that grain, it probably belongs in another table or needs an explicit allocation rule.
 
 ## Atomic grain
 
@@ -101,9 +114,11 @@ The three core fact-table patterns encode different kinds of grain:
 
 The pattern is not chosen from table size or refresh frequency. It is chosen from what a row means. See [Fact table patterns](../02-fact-tables/fact-table-patterns.md) for lifecycle and loading behavior.
 
-## Fact, dimension, and aggregation grain
+## Grain also applies to dimensions and summaries
 
-**Dimensional grain** states what one dimension row represents:
+So far, the examples have focused on facts, but dimensions and summary tables also need a clear row meaning.
+
+**Dimension grain** states what one dimension row represents:
 
 - a Type 1 customer dimension is commonly one row per customer;
 - a Type 2 customer dimension is one row per historical customer version;
@@ -112,7 +127,7 @@ The pattern is not chosen from table size or refresh frequency. It is chosen fro
 
 This distinction matters when counting. `COUNT(DISTINCT customer_sk)` on a Type 2 dimension counts versions, not necessarily customers. Count a durable customer key when the question is about entities.
 
-**Aggregation grain** states the level at which a summary row is stored. An aggregate fact table declares a higher grain than its atomic source. For example:
+**Aggregation grain** states the level at which a summary row is stored. An aggregate fact table has less detail than its atomic source. For example:
 
 > One row per product category, country, and calendar month.
 
@@ -151,12 +166,12 @@ A learner can attempt the same assessment repeatedly, so `(learner_key, assessme
 
 ### E-commerce: header and line measures
 
-Suppose order 9001 has three lines and a €12 order-level shipping charge.
+Suppose order 9002 has three lines and a EUR 12 order-level shipping charge.
 
-At order-line grain, copying €12 to each line produces €36 when summed. Valid choices are:
+At order-line grain, copying EUR 12 to each line produces EUR 36 when summed. Valid choices are:
 
 1. keep shipping in an order-header fact with grain “one row per order”;
-2. allocate the €12 to lines using a governed rule and store both the allocated amount and allocation method;
+2. allocate the EUR 12 to lines using a governed rule and store both the allocated amount and allocation method;
 3. keep order-level analysis separate and drill across aggregated results.
 
 Changing a column name from `shipping_amount` to `order_shipping_amount` does not fix the grain mismatch.
@@ -229,7 +244,7 @@ Do not append the new rows and hope consumers infer the difference.
 
 ### 1. State the candidate key
 
-Translate the grain sentence into columns. For an account-day balance:
+Translate the grain sentence into columns. The columns that should uniquely identify a row are the **candidate key**. For an account-day balance:
 
 ```sql
 select
@@ -241,7 +256,7 @@ group by account_key, balance_date_key
 having count(*) > 1;
 ```
 
-Zero results support the hypothesis; they do not prove the business definition. Source corrections, multiple balance types, currencies, or account subledgers may reveal a missing grain component.
+Zero results are a useful check, but they do not prove the business definition. Source corrections, multiple balance types, currencies, or account subledgers may reveal a missing grain component.
 
 ### 2. Explain every duplicate
 
@@ -264,9 +279,9 @@ For every measure, finish this sentence:
 
 If the blank differs from the table's grain, move, derive, or allocate the measure.
 
-### 4. Test dimensional cardinality
+### 4. Check that each dimension returns at most one row
 
-Every fact row should resolve to at most one member for each ordinary dimension role. A fact-to-dimension join that returns several rows often indicates:
+This check concerns **cardinality**: how many rows can match across a relationship. Every fact row should resolve to at most one member for each ordinary dimension role. A fact-to-dimension join that returns several rows often indicates:
 
 - a natural-key join into a Type 2 dimension without an effective-date condition;
 - duplicate dimension versions;
@@ -351,7 +366,7 @@ The architectural default is:
 
 Exceptions are reasonable when detailed data is unavailable, prohibited, too sensitive, or economically unjustified. State the limitation explicitly.
 
-## Modern implementation notes — later synthesis
+## Optional: modern implementation notes
 
 This section maps the timeless grain principle to current engineering practice. The terminology and product guidance here are modern synthesis, not terminology attributed to Kimball.
 

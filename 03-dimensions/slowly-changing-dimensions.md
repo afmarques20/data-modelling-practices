@@ -1,8 +1,17 @@
 # Slowly Changing Dimensions
 
-Dimension attributes change. A customer moves, an employee changes department, a course is reclassified, and a product receives a new brand assignment. The modeling decision is not whether change happens, but which historical question the model must answer after it happens.
+Dimension descriptions change. A customer moves, an employee changes department, or a product is assigned to a new category. The practical question is: **what should an old report show after the change?**
 
-This is an attribute-level decision. One dimension can legitimately contain Type 0, Type 1, and Type 2 attributes at the same time. Data owners, not the pipeline team alone, should decide which changes have analytical value.
+Two common answers are:
+
+| Change | Desired result | Common response |
+|---|---|---|
+| Correct `Dat & AI` to `Data & AI` | Old reports should use the corrected spelling | Type 1: overwrite the value |
+| Employee moves from Consulting to Data & AI | Old learning events should remain under the department that was valid then | Type 2: add a historical version |
+
+The numbered types are names for different ways of responding to change. Type 1 is not inherently better or earlier than Type 2; the reporting question decides which response is correct.
+
+This decision is made attribute by attribute. One employee dimension might overwrite spelling corrections while preserving department history. Data owners, not the pipeline team alone, should decide which changes have analytical value.
 
 ## The problem
 
@@ -15,7 +24,7 @@ Both answers can be useful:
 
 An implementation that silently chooses one interpretation creates plausible but disputed reports. Slowly changing dimension techniques make the chosen interpretation explicit.
 
-## Mental model
+## The keys used in historical dimensions
 
 - **Business or natural key:** which source record or business identifier?
 - **Durable key:** which real-world entity across source-key changes and Type 2 versions?
@@ -98,7 +107,7 @@ Use one interval convention consistently. The examples here use half-open period
 | 18431 | 900017 | EMP-0042 | Consulting | 2025-01-01 | 2026-04-01 | 0 |
 | 29107 | 900017 | EMP-0042 | Data & AI | 2026-04-01 | 9999-12-31 | 1 |
 
-Required invariants:
+The following rules must always be true. These always-true rules are often called **invariants**:
 
 1. Every row has one surrogate key.
 2. All versions of the entity share one durable key.
@@ -183,7 +192,7 @@ The version surrogate key partitions facts into historically correct descriptive
 - history already modeled more naturally as events or periodic facts;
 - attributes for which the business only authorizes a current-state view.
 
-## Other SCD responses to recognize
+## Optional: other SCD responses to recognize
 
 | Type | Action | Useful when | Main caution |
 |---|---|---|---|
@@ -196,7 +205,7 @@ The version surrogate key partitions facts into historically correct descriptive
 | 6 | Type 2 history plus Type 1 current attributes on all versions | Historic and current rollups from one wide dimension | Repeated current columns and larger update scope |
 | 7 | Historic surrogate key plus durable-key/current view | Broad current and historic perspectives | Additional join path and semantic complexity |
 
-Types 5 through 7 are not maturity levels. Use them only when users genuinely need both as-was and as-is analysis and the semantic layer can label those perspectives unambiguously. Mini-dimensions are developed further in [dimension patterns](dimension-patterns.md).
+Types 5 through 7 are specialized combinations, not maturity levels or a recommended progression. Most beginners should become comfortable with Types 1 and 2 first. Use the later types only when users genuinely need both as-was and as-is analysis and the semantic layer can label those perspectives clearly. Mini-dimensions are developed further in [dimension patterns](dimension-patterns.md).
 
 ## Tradeoffs
 
@@ -211,7 +220,7 @@ Types 5 through 7 are not maturity levels. Use them only when users genuinely ne
 
 Type 2 storage growth is usually a secondary concern. Incorrect history and ambiguous counts cost more than dimension rows. The real tradeoff is semantic and operational complexity.
 
-## Modern implementation notes
+## Optional: modern implementation notes
 
 - **SQL and ELT:** calculate a deterministic change hash over governed Type 2 attributes, but retain column-level comparisons for auditability. Do not include technical load timestamps in the hash.
 - **dbt-style workflows:** snapshots can capture source-observed history, but a snapshot timestamp is system time unless it represents a governed business effective time. Add stable version keys and explicit tests for one current row and non-overlap.

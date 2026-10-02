@@ -1,6 +1,8 @@
 # Semantic Layers and Governed Metrics
 
-A dimensional warehouse organizes trustworthy analytical data. A semantic layer turns that data into a governed language for consumers: entities, relationships, dimensions, measures, metrics, time behavior, labels, and access rules.
+Suppose two dashboards show a different number of “active learners.” One counts anyone who logged in. The other counts learners who completed at least one activity. Both queries run correctly, but the phrase has two meanings.
+
+A **semantic layer** prevents that kind of disagreement by giving business terms, relationships, and calculations a shared definition. A dimensional warehouse organizes trustworthy rows; the semantic layer explains how people and tools should use those rows safely.
 
 ```mermaid
 flowchart LR
@@ -9,11 +11,11 @@ flowchart LR
     G --> C[Dashboards, notebooks,<br/>applications, AI]
 ```
 
-The layers reinforce one another. A semantic layer cannot make mixed-grain facts correct; a perfect star does not stop five dashboards from defining “active learner” five different ways.
+Both layers are necessary. A semantic layer cannot repair a fact table with mixed grain. A perfect star schema, on its own, cannot stop five dashboards from defining “active learner” five different ways.
 
 ## The problem
 
-Without shared semantics, every report reimplements:
+Without shared definitions, every report has to decide for itself:
 
 - joins and relationship direction;
 - current versus historical dimension logic;
@@ -23,19 +25,27 @@ Without shared semantics, every report reimplements:
 - fiscal calendars and time comparisons;
 - filters such as test accounts, canceled orders, or internal employees.
 
-Two queries can both be valid SQL and still answer different business questions. Metric governance makes the differences intentional and visible.
+Two queries can both be valid SQL and still answer different questions. A governed metric makes the chosen meaning explicit and reusable.
 
 ## Mental model
 
 > The dimensional model defines what the data means at row level. The semantic layer defines how people may safely ask questions of it.
 
-## Physical, semantic, and metric grain
+## Three levels of meaning
 
-The underlying fact retains its declared grain:
+The terms are easier to separate with one example:
+
+| Level | Question it answers | Learning example |
+|---|---|---|
+| Physical fact | What does one stored row mean? | One submitted assessment attempt |
+| Semantic model | How may tables be joined and fields grouped? | Attempts join to the learner and course valid for that attempt |
+| Metric | How is a business result calculated? | Passed attempts divided by graded attempts |
+
+The underlying fact still has its declared grain:
 
 > One row in `fact_assessment_attempt` represents one submitted learner attempt for one assessment.
 
-A semantic metric has a **calculation grain and allowed dimensionality**. For example:
+A semantic metric also states the groupings for which its calculation is valid. For example:
 
 ```yaml
 metric: assessment_pass_rate
@@ -53,9 +63,13 @@ filters:
 format: percentage
 ```
 
-Store additive components in the fact. Calculate the ratio after aggregating those components at the user's grouping level. Averaging stored row-level percentages is usually wrong.
+Store countable components such as `passed_count` and `graded_attempt_count` in the fact. Add them for the requested group, then divide. Averaging percentages from individual rows or subgroups is usually wrong.
 
-## What a semantic contract should specify
+For example, one course with 9 passes out of 10 attempts and another with 1 pass out of 2 attempts have a combined pass rate of `10 / 12 = 83.3%`. Averaging `90%` and `50%` would incorrectly produce `70%`.
+
+## What a semantic definition should specify
+
+The following checklist is detailed. Beginners can start with the metric's name, source fact, calculation, time field, allowed filters, and owner, then add the remaining rules as the model grows.
 
 ### Entities and keys
 
@@ -119,18 +133,18 @@ That definition settles:
 - historical attribution: event-time department;
 - time window: calendar month in the reporting time zone.
 
-The SQL becomes an implementation of a reviewed business definition rather than the definition itself.
+The SQL now implements an agreed definition instead of quietly inventing one.
 
 ## Conformed dimensions and semantic consistency
 
-Kimball integrates processes through conformed dimensions and facts. A semantic layer continues that contract:
+Dimensional models integrate processes through shared, consistently defined dimensions and facts. These are called **conformed dimensions and facts**. A semantic layer carries that agreement into business-facing names and calculations:
 
 - `Customer` means the same governed entity across sales, support, and payments;
 - `Net Revenue` uses the same components and currency policy across tools;
 - `Order Date` and `Ship Date` are explicit roles, not a generic ambiguous date;
 - metric joins respect fact grain rather than automatically joining raw fact tables.
 
-Semantic consistency cannot be achieved by naming alone. Two `customer_id` columns are not conformed if their populations, keys, histories, or attribute values differ.
+Matching column names are not enough. Two `customer_id` columns are not conformed if they identify different populations, use different keys, or handle history differently.
 
 ## Safe cross-process metrics
 
@@ -140,9 +154,11 @@ Suppose a dashboard needs orders, shipments, and payments by customer-month. Do 
 2. align the aggregated results;
 3. calculate cross-process metrics from those aligned values.
 
-This is Kimball's drill-across principle expressed in a modern metric layer. See [Multiple processes](../05-enterprise-modeling/multi-process-and-heterogeneous-models.md).
+This pattern is called **drill-across**: summarize separate processes to the same shared headings, then combine the summaries. See [Multiple processes](../05-enterprise-modeling/multi-process-and-heterogeneous-models.md).
 
-## Platform mappings
+## Optional: platform mappings
+
+The products below use different vocabulary, but the same questions remain: What does one row mean? Which joins are safe? How should each measure aggregate? Where is a metric defined once?
 
 ### dbt
 
@@ -227,7 +243,7 @@ These must be recomputed from sufficient detail or a mergeable sketch appropriat
 
 ## Change management
 
-A metric is an API used by people and software. Treat changes deliberately:
+A metric is a shared interface used by people, dashboards, and software. A quiet definition change can alter many reports at once, so treat changes deliberately:
 
 1. name an owner and approver;
 2. store the definition in version control;
@@ -239,7 +255,7 @@ A metric is an API used by people and software. Treat changes deliberately:
 
 The objective is not to freeze definitions forever. It is to make evolution governed and reproducible.
 
-## AI and natural-language analytics
+## Optional: AI and natural-language analytics
 
 Generative interfaces amplify semantic-model quality. An AI assistant can translate a request into a query, but it still needs:
 
@@ -274,6 +290,16 @@ Central semantics reduce duplication and improve consistency, but create a gover
 - [Conformance and bus architecture](../05-enterprise-modeling/conformance-and-bus-architecture.md)
 - [Layered architectures](layered-architectures.md)
 - [Learning analytics design](../08-practical-designs/learning-analytics.md)
+
+## Beginner review checklist
+
+- [ ] Does every important metric have one plain-language definition?
+- [ ] Are its source fact, time field, filters, and entity key named?
+- [ ] Are ratios calculated from summed components rather than averaged percentages?
+- [ ] Are balances and other snapshots protected from being summed through time?
+- [ ] Are facts summarized separately before cross-process results are combined?
+- [ ] Can users tell whether an attribute means “at event time” or “current”?
+- [ ] Is one owner responsible for approving definition changes?
 
 ## What to remember
 

@@ -1,29 +1,51 @@
 # Bridges and Many-to-Many Relationships
 
-A classic star assumes one fact row points to one member of each dimension. Real relationships are not always single-valued: an account has several holders, an employee has several skills, a customer belongs to several segments, and a learning session may have several instructors.
+Sometimes one fact row belongs to more than one member of the same dimension. A joint bank account has two holders. An employee can have several skills. A medical encounter can have several diagnoses.
 
-A bridge preserves the fact's natural grain while making the multivalued relationship explicit. It also makes the most dangerous question unavoidable: should a measure be allocated across members or repeated for impact analysis?
+A **bridge table** represents those multiple relationships without changing what the original fact row means.
 
-## The problem
+## Start with a joint account
 
-Consider a monthly account snapshot.
+Imagine that account `7008` has a month-end balance of EUR 1,000 and two holders:
+
+| Account | Holder | Ownership share |
+|---|---|---:|
+| 7008 | Ana | 60% |
+| 7008 | Rui | 40% |
+
+The account snapshot should still contain only one balance row:
+
+| Account | Month | Ending balance |
+|---|---|---:|
+| 7008 | 2026-06 | EUR 1,000 |
+
+Putting one holder on that row would lose the other holder. Copying the EUR 1,000 row once for Ana and once for Rui would produce EUR 2,000 when somebody summed it.
+
+The safe design keeps the balance once and stores the two holder relationships separately:
+
+```mermaid
+flowchart LR
+    F[One account-month fact<br/>EUR 1,000] --> B[Bridge<br/>Ana 60%<br/>Rui 40%]
+    B --> C[Customer dimension]
+```
+
+This is the central idea:
+
+> **The fact stores the measurement once. The bridge lists all members related to that measurement.**
+
+## The problem it solves
+
+For the monthly account snapshot, the grain is:
 
 > One fact row represents one account at one month end.
 
-An account can have two or more holders. Adding `customer_key` directly to the fact would imply one holder. Duplicating the fact once per holder would silently change the grain and double the account balance unless every measure were allocated.
+An account may have several holders, and one customer may hold several accounts. This is a **many-to-many relationship**.
 
-The relationship is genuinely many-to-many over the complete model:
-
-- one account can have many customers;
-- one customer can hold many accounts.
-
-## Mental model
-
-**The fact keeps one row for the measurement. The bridge enumerates who or what participates in that row.**
+A bridge preserves the fact's grain while making the relationship visible. It also forces an important reporting choice: should the balance be split among the holders, or should the full balance be associated with every holder?
 
 ## Grain
 
-Always declare three grains:
+Write down what one row means in each table:
 
 1. **Fact grain:** one row per account per month end.
 2. **Bridge grain:** one row per durable account, durable customer, relationship role, and non-overlapping effective period.
@@ -33,7 +55,7 @@ If a reusable group bridge is used instead:
 
 > One bridge row represents one member in one exact member group.
 
-Never describe a bridge merely as “a mapping table.” Its grain determines whether it duplicates, allocates, or time-slices facts.
+Calling a bridge only “a mapping table” is too vague. Its row meaning tells users whether the relationship allocates a measure, repeats it for impact analysis, or applies only during a particular period.
 
 ## Core model: effective-dated account holders
 
@@ -44,7 +66,7 @@ flowchart LR
     B --> C[dim_customer]
 ```
 
-An alternative is for the fact to carry an `account_holder_group_key`, which joins to a bridge containing one row per customer in that exact group. Group keys work well when the same combinations repeat. A direct effective-dated account-to-customer bridge is often clearer when membership changes independently and consumers query an as-of relationship.
+The diagram uses a direct account-to-customer bridge. Another design gives each exact combination of holders a group key and stores that key on the fact. Group keys work well when the same combinations repeat. The direct design is often easier to understand when holders change independently over time.
 
 Example bridge rows:
 
@@ -54,13 +76,13 @@ Example bridge rows:
 | 7008 | 205 | Joint | 2025-01-01 | 2026-07-01 | 0.40 |
 | 7008 | 309 | Joint | 2026-07-01 | 9999-12-31 | 0.40 |
 
-These rows use half-open validity periods. At any requested instant, the active weights for account 7008 must sum to 1.00 if the relationship supports allocation.
+The `valid_from` and `valid_to` columns say when each relationship applies. The end is excluded, so a relationship ending on July 1 and one starting on July 1 do not overlap. At any chosen time, the active weights for account `7008` must add up to `1.00` if the report allocates the balance.
 
-## Two valid report semantics
+## Two valid ways to report the balance
 
 ### Weighted allocation report
 
-Question: “Allocate portfolio balance across account holders without changing the bank total.”
+Question: “How much of the portfolio balance should be assigned to each account holder without changing the bank total?”
 
 For each fact/bridge result row:
 
@@ -68,15 +90,15 @@ For each fact/bridge result row:
 
 If a EUR 1,000 balance has weights 0.60 and 0.40, the holders receive EUR 600 and EUR 400. Summing across customers returns EUR 1,000.
 
-**Required rule:** active allocation weights for each bridged fact entity and as-of time must sum to exactly 1.00 within an agreed tolerance.
+**Required rule:** for each account and point in time, the active weights must add up to `1.00`, allowing only an agreed rounding tolerance.
 
 ### Unweighted impact report
 
-Question: “What total balance is associated with customers in this segment, regardless of shared ownership?”
+Question: “What balance is connected to customers in this segment, even when they share an account?”
 
 The full EUR 1,000 is associated with each holder. The query deliberately does not apply the allocation weight. The result can total EUR 2,000 across holders.
 
-That is not a bug if the report is labeled **impact** or **association** and users understand that totals are non-additive across bridge members. Never present an unweighted impact report as allocated revenue, balance, or headcount.
+That result is useful for impact analysis, but it cannot be summed across holders. Label it **impact** or **association**, not allocated revenue, balance, or headcount.
 
 ### Make the choice visible
 
@@ -91,7 +113,18 @@ Two governed semantic views can expose the same bridge safely: one weighted and 
 
 ## Query pattern
 
-For a month-end snapshot with a direct effective-dated bridge:
+The query below does three things:
+
+1. selects the holder relationships that were active at month end;
+2. selects the matching historical customer version;
+3. multiplies each balance by its allocation weight.
+
+```text
+EUR 1,000 fact × 60% Ana weight = EUR 600 allocated to Ana
+EUR 1,000 fact × 40% Rui weight = EUR 400 allocated to Rui
+```
+
+In SQL:
 
 ```sql
 select
@@ -110,16 +143,17 @@ join dim_customer c
   on c.durable_customer_key = b.durable_customer_key
  and m.month_end_date >= c.valid_from
  and m.month_end_date <  c.valid_to
+where m.month_end_date = :selected_month_end
 group by c.customer_segment;
 ```
 
-In a curated presentation model, resolve the appropriate customer surrogate key during transformation so ordinary reports do not need two temporal joins. Whichever form is used, constrain the bridge to exactly one as-of instant. Omitting the time predicate combines relationships that never coexisted.
+In a curated presentation model, the transformation can resolve the correct customer version in advance so ordinary reports do not need both date-range joins. Either way, the query must choose one point in time. Without those time conditions, it can combine holder relationships that were never active together.
 
-Account balances remain semi-additive across time even after correct bridge allocation. Weighting solves allocation across holders, not summation across months.
+Allocation prevents double counting across holders. It does not make balances safe to add across months; a balance is still a point-in-time value.
 
 ## Group bridges
 
-For an employee skill set, many employees may share the same combination of skills. A reusable group design is compact:
+Sometimes the same combination of members appears repeatedly. For example, many employees may share the skill set `{Python, SQL}`. The fact or dimension can point to a reusable group:
 
     dim_employee
     └── skill_group_key             FK
@@ -137,17 +171,29 @@ Bridge grain:
 
 > One row represents one skill membership in one exact skill group.
 
-Allocation usually makes no sense for skills. The bridge supports filtering and impact questions such as “employees associated with Python,” with distinct employee counts where required.
+Allocation usually makes no sense for skills. The bridge instead answers questions such as “which employees have Python?” Count distinct employees, not bridge rows, when the requirement is a number of people.
 
 ### AND versus OR filters
 
-“Python or SQL” is a membership filter over either skill. “Python and SQL” requires employees whose group contains both memberships, commonly implemented with grouped conditional counts or intersected member sets. A simple row predicate with `skill = 'Python' AND skill = 'SQL'` can never match because the values occur on separate rows.
+“Python **or** SQL” matches either skill row. “Python **and** SQL” must find employees whose group contains both rows. This condition cannot work:
+
+```sql
+where skill = 'Python' and skill = 'SQL'
+```
+
+One row cannot contain both values. Use grouped conditional counts or intersect the two sets of employees instead.
 
 Complex membership logic is a good candidate for a semantic model or governed reusable query.
 
 ## Bridge or relationship fact?
 
-Not every many-to-many relationship should be hidden behind a bridge.
+Not every many-to-many relationship needs a bridge. Start by asking what the relationship means:
+
+| Situation | Usually model it as |
+|---|---|
+| The relationship is itself the event | A factless relationship fact |
+| One existing fact row has several simultaneous dimension members | A bridge |
+| One member identifies the event at its natural grain | A normal fact foreign key |
 
 ### Use a factless relationship fact when the relationship is itself the business event
 
@@ -190,7 +236,7 @@ Document:
 
 Do not use the same weight automatically for revenue, cost, quantity, and count. A relationship may have contractual ownership weights while event counts remain impact-only.
 
-## Effective-dated bridges
+## Advanced: effective-dated bridges
 
 ### The problem
 
@@ -263,7 +309,7 @@ One encounter can have several diagnoses. Measures can be allocated using approv
 | Can preserve relationship history | Effective dating and late corrections are demanding |
 | Avoids sparse positional columns | AND-style membership filters are harder |
 
-## Modern implementation notes
+## Optional: modern implementation notes
 
 - Materialize a consumer-safe weighted view and a separately named impact view. Metric definitions should choose one explicitly.
 - In dbt-style pipelines, test uniqueness at the declared bridge grain, non-overlap of effective periods, and weight sums per parent/group/as-of period.
@@ -271,18 +317,18 @@ One encounter can have several diagnoses. Measures can be allocated using approv
 - In SAP HANA calculation views or Datasphere, model many-to-many cardinality honestly. Use calculated allocated measures only where the weight's measure scope is explicit; do not rely on generic aggregation over an expanded association.
 - Consider pre-aggregating the bridge only after correctness at atomic grain is proven. Preserve the unweighted atomic fact for reconciliation.
 
-## Verification checklist
+## Beginner review checklist
 
-- [ ] Fact, bridge, and dimension grains are written down.
-- [ ] The business owner has chosen allocation, impact, or both.
-- [ ] Weights have a documented basis and measure scope.
-- [ ] Allocation weights sum to one for every applicable group and as-of period.
-- [ ] Effective periods do not overlap.
-- [ ] Every fact/as-of lookup returns the expected member set.
-- [ ] Weighted totals reconcile to the unbridged fact total.
-- [ ] Impact metrics are visibly labeled non-additive across members.
-- [ ] Entity counts use distinct durable keys where required.
-- [ ] Late relationship corrections are replayable and audited.
+- [ ] Can I explain what one row means in the fact, bridge, and dimension?
+- [ ] Has the business owner chosen allocation, impact, or both?
+- [ ] Do weights have a documented basis and measure scope?
+- [ ] Do allocation weights add up to one for every applicable group and time period?
+- [ ] Do effective periods avoid overlaps?
+- [ ] Does every fact lookup return the expected members at the chosen time?
+- [ ] Do weighted totals match the original fact total?
+- [ ] Are impact metrics clearly labeled as unsafe to sum across members?
+- [ ] Do entity counts use distinct durable keys where needed?
+- [ ] Can late relationship corrections be replayed and audited?
 
 ## What to remember
 

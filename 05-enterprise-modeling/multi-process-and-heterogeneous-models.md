@@ -1,27 +1,56 @@
 # Multi-Process and Heterogeneous Models
 
-An enterprise does not have one universal measurement grain. Orders, shipments, payments, feature events, inventory balances, learning completions, and forecasts occur at different times and dimensionalities. Good enterprise modeling integrates them without pretending they are one process.
+Orders, shipments, payments, returns, inventory balances, and forecasts are different business processes. Their rows occur at different times and represent different things. A good enterprise model lets users compare them without pretending that they share one universal grain.
 
-This chapter covers two related problems:
+This chapter covers two related situations:
 
 1. combining metrics from several fact tables safely; and
-2. modeling product or process families whose facts and attributes differ substantially.
+2. modeling product families whose facts and attributes are very different. This second situation is often called **heterogeneous modeling**.
+
+## Start with orders and shipments
+
+Suppose one customer bought a keyboard in two order lines:
+
+| Order line | Ordered amount |
+|---|---:|
+| 1 | EUR 60 |
+| 2 | EUR 40 |
+
+The warehouse shipped the order in three separate shipment lines:
+
+| Shipment line | Shipped amount |
+|---|---:|
+| A | EUR 30 |
+| B | EUR 30 |
+| C | EUR 40 |
+
+The correct total is EUR 100 ordered and EUR 100 shipped. If the two order rows are joined directly to the three shipment rows, SQL produces `2 × 3 = 6` combinations. Each amount repeats, and both totals become wrong.
+
+The safe approach is:
+
+```mermaid
+flowchart LR
+    O[Order lines] --> OA[Sum orders to<br/>customer + month]
+    S[Shipment lines] --> SA[Sum shipments to<br/>customer + month]
+    OA --> J[Align the two<br/>small result sets]
+    SA --> J
+```
+
+This pattern is called **multipass drill-across**: calculate each process separately, then combine the results at one shared report grain.
 
 ## The problem
 
-A team wants one report containing orders, shipments, returns, and payments by customer and month. The tempting query joins all four fact tables on customer and date. Each table contains several rows for the same customer-month, so the join multiplies rows and inflates every measure.
+A team wants one report containing orders, shipments, returns, and payments by customer and month. Joining the atomic fact tables on customer and date is tempting, but each table contains several rows for the same customer-month. The join multiplies rows and inflates every measure.
 
-Elsewhere, a bank tries to place mortgages, checking accounts, credit cards, and investments in one “universal account” table. Hundreds of columns are null or mean different things by product type.
+In a second example, a bank tries to place mortgages, checking accounts, credit cards, and investments in one “universal account” table. Hundreds of columns are empty or mean different things for different products.
 
 Both failures come from ignoring business-process and grain boundaries.
 
-## Mental model
+## The basic rules
 
-**One process and one grain per atomic fact table. Integrate across facts only after each has been summarized to the same conformed row headers.**
+**Keep one process and one grain in each atomic fact table. Combine processes only after summarizing each one to the same agreed report grain.**
 
-For heterogeneity:
-
-**Share the true intersection; specialize the rest.**
+For different product types: **share only what is genuinely common, and model the rest separately.**
 
 ## Grain
 
@@ -34,19 +63,19 @@ Example grains:
 - Monthly account snapshot: one row per account per month end.
 - Mortgage subtype snapshot: one row per mortgage account per month end.
 
-None becomes compatible merely because all contain customer, product, and date keys.
+These tables do not become safe to join merely because they all contain customer, product, and date keys. Their rows still mean different things.
 
 ## Why direct fact-to-fact joins fail
 
-Suppose one customer-product-month has:
+The row multiplication grows quickly. Suppose one customer-product-month has:
 
 - 3 order lines;
 - 2 shipment lines;
 - 2 return events.
 
-Joining the facts on customer, product, and month produces up to 3 × 2 × 2 = 12 combinations before aggregation. Order amounts repeat for each shipment and return; shipment amounts repeat for each order and return.
+Joining the facts on customer, product, and month produces up to `3 × 2 × 2 = 12` rows before aggregation. Every order repeats for each shipment and return. Every shipment repeats for each order and return.
 
-This query is uncontrolled and prohibited in a dimensional presentation model:
+This direct fact-to-fact join is unsafe:
 
 ```sql
 -- Wrong: many-to-many multiplication between facts
@@ -60,25 +89,25 @@ join fact_return_event r
  and o.product_key = r.product_key;
 ```
 
-A declared relationship between two facts does not make the row multiplication valid. Even a database that executes the join quickly returns the wrong totals.
+Declaring a relationship between the tables does not fix the row multiplication. A fast query can still return wrong totals.
 
-## Multipass drill-across
+## Multipass drill-across: aggregate first, align second
 
 ### The problem it solves
 
-Users need measures from different processes in one report without combining their atomic rows.
+Users need measures from different processes in one report, but the atomic rows cannot be joined safely.
 
-### Mental model
+### The rule
 
 **Aggregate first, align second.**
 
 ### Result grain
 
-Before writing SQL, declare the common report grain:
+Before writing SQL, say exactly what one final report row means:
 
 > One result row represents one calendar month, customer segment, and product category.
 
-Every pass must return at most one row at that exact grain.
+Each process query must return at most one row at that exact grain. In other words, orders, shipments, and returns are each summarized independently before the results are joined.
 
 ### Model
 
@@ -153,19 +182,19 @@ full outer join returns r
  and r.product_category = coalesce(o.product_category, s.product_category);
 ```
 
-The exact syntax can be simplified by a semantic engine or a generated conformed scaffold. The invariant is more important than the syntax: each fact is aggregated independently, then result sets are aligned on identical conformed attributes.
+A semantic engine may generate shorter SQL. The rule stays the same: aggregate each fact independently, then align the small results on identical conformed attributes.
 
 ### Why full outer alignment matters
 
-One process may have activity when another does not. An inner join would hide categories with returns but no new orders, or orders not yet shipped. A full outer alignment preserves every process result; metric definitions then decide whether missing values display as zero, null, or not applicable.
+One process may have activity when another does not. An inner join would hide a category that had returns but no new orders, or orders that have not shipped yet. A full outer join keeps every process result. The metric definition then decides whether a missing value means zero, unknown, or not applicable.
 
 ### Date roles must be explicit
 
-The example compares order month, ship month, and return month. That is a valid operational flow view, but it is not a cohort view of the same original orders. If the question is “How much of January's orders eventually shipped or returned?”, the model needs an order lineage key or accumulating process model. Conformed calendar labels alone do not establish causal identity.
+The example compares activity that occurred in each month: January orders with January shipments and January returns. It does **not** follow January's orders through their later lifecycle. To ask “How much of January's orders eventually shipped or returned?”, the model needs an order lineage key or an accumulating process model. A shared month label does not prove that two rows describe the same order.
 
-## Preconditions for drill-across
+## When drill-across is safe
 
-Drill-across is safe only when:
+Check all of the following before aligning results:
 
 - row headers come from conformed dimensions or shrunken conformed rollups;
 - every pass uses identical attribute definitions and domain values;
@@ -174,23 +203,25 @@ Drill-across is safe only when:
 - currency, units, status filters, and date roles are compatible;
 - missing-process rows have a governed interpretation.
 
-If customer segment is Type 1 in one process and event-time Type 2 in another, it is not a conformed row header until the historical perspective is reconciled.
+For example, a customer segment that always shows today's value in one process cannot safely align with an event-time historical segment in another. The teams must first agree which view of history the report uses.
 
 ## Cross-process calculations
 
-Compute ratios only after safe alignment:
+Calculate ratios only after the numerator and denominator have been aligned safely:
 
 - return rate = returned quantity / shipped quantity;
 - fulfillment rate = shipped quantity / ordered quantity;
 - learning completion per active user = completions / active-user count.
 
-Preserve numerators and denominators. Do not sum precomputed process ratios or join atomic facts to calculate them.
+Keep the numerator and denominator. Do not sum precomputed ratios or join atomic facts to calculate them.
 
-Different date roles or lags can make a ratio analytically misleading even if SQL is correct. Document whether the numerator and denominator are activity-period, cohort, or lifecycle aligned.
+For example, if the monthly aligned results contain 90 shipped items and 9 returned items, the return rate is `9 / 90 = 10%`. Calculating a percentage on every atomic row and then adding the percentages would be meaningless.
+
+Different date roles can make a mathematically correct ratio misleading. State whether the numerator and denominator compare activity in the same period, one cohort over time, or the same lifecycle instances.
 
 ## Fact constellations
 
-A set of process-specific stars sharing conformed dimensions is sometimes called a fact constellation. It is not a single giant schema:
+A group of process-specific stars that share conformed dimensions is called a **fact constellation**. It is not one giant fact table:
 
 ```mermaid
 flowchart LR
@@ -205,13 +236,13 @@ flowchart LR
     D --> R
 ```
 
-Each star remains understandable and independently scalable. Shared dimensions make the constellation coherent.
+Each star remains understandable and can scale independently. Shared dimensions let users compare their summarized results.
 
 ## Consolidated fact tables
 
 ### When consolidation can work
 
-A consolidated fact combines measurements from different sources or process variants only when they can be expressed at the same declared grain and dimensional context.
+A **consolidated fact** stores measurements together only when they can use the same declared grain and dimensional context.
 
 Example:
 
@@ -226,17 +257,17 @@ Actual, budget, and forecast amounts may share that grain if a scenario dimensio
 - compatible units, currencies, and sign conventions;
 - a clear scenario/source/process dimension;
 - no loss of process-specific detail;
-- reconciliable lineage to atomic facts.
+- reconcilable lineage to atomic facts.
 
 ### When not to consolidate
 
 Do not combine order lines, shipment lines, and payment transactions merely because all have amounts. Do not fill a wide table with measures that are valid only for some row types while presenting them as one process. Keep atomic facts and drill across.
 
-A consolidated performance table is often a derived serving optimization, not the system of record. Rebuild it from governed atomic facts.
+A consolidated performance table is usually a convenient derived table, not the original source of truth. It should be rebuildable from governed atomic facts.
 
-## Different fact granularities
+## When one process has less detail
 
-Actual sales may be daily by SKU and store, while forecast is monthly by brand and region. Drill-across at SKU-day is impossible because forecast has no such detail.
+Actual sales may be daily by SKU and store, while the forecast is monthly by brand and region. A SKU-day comparison is impossible because the forecast does not contain SKU or day detail.
 
 Safe approach:
 
@@ -245,9 +276,9 @@ Safe approach:
 3. Align results at brand-region-month.
 4. Make the loss of atomic detail visible.
 
-Never allocate a high-level forecast to SKU-day unless the business approves an allocation model. An allocation creates modeled facts, which need a method/version dimension and reconciliation to the original total.
+Do not invent SKU-day forecast detail unless the business approves an allocation model. Allocated values are modeled estimates, so store the method and version and verify that they add back to the original forecast.
 
-## Heterogeneous products and processes
+## Different product types: share the common part
 
 ### The problem
 
@@ -258,9 +289,9 @@ Products may share an enterprise identity but have incompatible attributes and m
 - credit cards: credit limit, utilization, delinquency status;
 - investment accounts: market value, holdings, realized gain.
 
-A universal table containing the union of every attribute and measure becomes sparse, confusing, and vulnerable to invalid comparisons.
+One universal table containing every possible attribute and measure becomes mostly empty, difficult to understand, and easy to misuse.
 
-### Mental model
+### The rule
 
 **Model the intersection once; model each subtype at its natural grain.**
 
@@ -286,11 +317,11 @@ Subtype fact grain:
 
 > One row represents one mortgage account at one month end, with mortgage-specific measures.
 
-The supertype supports portfolio-wide balance and account counts. Subtype facts support specialized analysis without hundreds of meaningless null columns.
+The shared, or **supertype**, fact supports portfolio-wide balances and account counts. The **subtype** facts support mortgage- or card-specific analysis without hundreds of meaningless empty columns.
 
 ### Shared identity
 
-`dim_account` holds common attributes such as account identifier, customer relationship, open date, branch, and account family. A subtype dimension extends only the relevant population. Keys and joins must make subtype membership unambiguous and one-to-one at the subtype entity grain.
+`dim_account` holds attributes that make sense for every account, such as account identifier, customer relationship, open date, branch, and account family. A subtype dimension adds attributes only for the relevant product. Its key must make the one-to-one subtype membership clear.
 
 ### Alternatives
 
@@ -302,13 +333,13 @@ The supertype supports portfolio-wide balance and account counts. Subtype facts 
 | Metrics share grain but not applicability | Separate facts or a carefully governed long measure model |
 | Completely unrelated populations | Separate dimensions; do not force a generic supertype |
 
-### The generic entity trap
+### Advanced: the generic entity trap
 
 A generic `dim_party` containing employees, vendors, customers, instructors, and contacts may look elegant in an integration layer. In an analytical presentation model it often produces mostly null columns, vague labels, complex security, and incorrect assumptions about shared attributes.
 
 Use domain-specific dimensions unless a shared analytical identity and attribute contract provide concrete value. A raw or Data Vault integration layer can remain more abstract while dimensional marts present business-specific views.
 
-### The generic measure trap
+### Advanced: the generic measure trap
 
 A long fact with columns `measure_type`, `measure_value`, and `unit` can handle hundreds of sparse measures, but it makes simple calculations, validation, and aggregation harder. Use it only when the measure set is genuinely extreme and open-ended. Prefer named fact columns or subtype facts for stable, important measures.
 
@@ -364,7 +395,7 @@ If source semantics cannot be reconciled, keep separate facts and drill across o
 | Universal sparse fact/dimension | One apparent structure | Ambiguous semantics, nulls, invalid comparisons |
 | Supertype plus subtypes | Shared portfolio view plus rich specialty models | More tables and navigation choices |
 
-## Modern implementation notes
+## Optional: modern implementation notes
 
 - **Semantic layers:** multi-fact planners can generate multipass queries, but only if relationships, grains, and conformed entities are declared correctly. Review generated SQL for atomic fact joins.
 - **dbt-style projects:** build one model per atomic process, then explicit aggregate models at a named common grain. Test uniqueness of every aggregate's row headers before joining them.
@@ -373,7 +404,7 @@ If source semantics cannot be reconciled, keep separate facts and drill across o
 - **SAP Datasphere:** analytical models and associations should expose shared dimensions while retaining process-specific facts. A combined analytical model needs explicit measure exception aggregation and compatible dimensionality.
 - **Performance:** materialize frequent cross-process aggregates after validating drill-across logic. Treat them as caches of governed computations, not a replacement for atomic models.
 
-## Architectural consequences
+## What this changes at architecture level
 
 - **Scalability:** each process can load, partition, and evolve independently.
 - **Maintainability:** process ownership is clear, and shared contracts isolate change.
@@ -381,6 +412,16 @@ If source semantics cannot be reconciled, keep separate facts and drill across o
 - **Usability:** users receive either a focused star or a governed cross-process semantic view.
 - **Source independence:** heterogeneous systems map into common process contracts without exposing source schemas.
 - **Governance:** incompatible facts and attributes remain visibly distinct instead of being hidden behind generic names.
+
+## Beginner review checklist
+
+- [ ] Does each atomic fact table contain one process at one declared grain?
+- [ ] Are fact tables summarized separately before their results are joined?
+- [ ] Does every pass return no more than one row at the final report grain?
+- [ ] Are the aligned dimensions truly conformed, including their history rules?
+- [ ] Are date roles and missing values explained?
+- [ ] Does a consolidated fact preserve a genuinely common grain and unit?
+- [ ] For different product types, are only truly common fields kept in the shared model?
 
 ## What to remember
 

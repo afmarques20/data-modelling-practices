@@ -1,8 +1,18 @@
 # Dates, Times, and Reporting Calendars
 
-Time is present in almost every analytical process, but a raw timestamp is not a business calendar. Users ask about fiscal periods, teaching weeks, holidays, month ends, work shifts, local trading days, and comparable prior periods. These meanings belong in governed dimensions rather than being reinvented in every query.
+A raw date tells us when something happened. It does not automatically tell us how the business wants to report it.
 
-## The problem
+For example, `2026-04-01` may also mean:
+
+- Wednesday;
+- the first day of April;
+- the first day of a new fiscal year;
+- an academic teaching week;
+- a public holiday in one location but a working day in another.
+
+A date dimension stores these shared labels once so every report uses the same rules. Exact timestamps still belong on facts when event order, latency, or audit detail matters.
+
+## Why a raw timestamp is not enough
 
 SQL can extract a month number from a timestamp. It cannot infer that:
 
@@ -15,7 +25,7 @@ SQL can extract a month number from a timestamp. It cannot infer that:
 
 If each dashboard implements these rules independently, period totals will disagree even when every fact row is correct.
 
-## Mental model
+## A simple way to think about it
 
 **A timestamp says when; a calendar dimension says what that time means to the business.**
 
@@ -65,7 +75,7 @@ The key may be a meaningful integer such as `20260930`, but it is still a wareho
 
 ### Why this works
 
-The dimension materializes shared calendar logic once. Every fact using the same calendar can filter and group with identical labels and boundaries. It is small enough to generate in advance for the complete retained history plus a future horizon.
+The dimension stores shared calendar logic once. Every fact using the same calendar can filter and group with identical labels and boundaries. It is small enough to generate in advance for the complete retained history plus a future horizon.
 
 ### Useful attributes
 
@@ -147,7 +157,7 @@ Organizations often report on calendars that do not align with Gregorian months.
 
 1. **Parallel attributes in one date dimension.** Best when the calendars are enterprise-wide and every day has one unambiguous assignment under each calendar.
 2. **Separate role-playing calendar views.** Useful for presentation when the same physical rows need distinct labels.
-3. **A calendar membership bridge.** Useful when calendar variants are numerous or tenant-specific and one date can participate in several named calendars.
+3. **A calendar membership bridge (advanced).** Useful when calendar variants are numerous or tenant-specific and one date can participate in several named calendars.
 
 For a membership bridge:
 
@@ -183,7 +193,7 @@ Include holiday name, holiday class, working-day flag, and any half-day indicato
 
 ## Multiple time zones
 
-### Mental model
+### A simple way to think about it
 
 **Store the instant once; derive and govern the business-local interpretation.**
 
@@ -263,7 +273,7 @@ Use date dimensions for virtually every fact table whose measures are analyzed o
 
 Precomputed attributes make queries simpler, faster, and consistent, but they turn calendar logic into governed reference data that must be maintained. More calendar variants increase flexibility and join complexity. A small number of parallel columns is easier than a bridge; a bridge is safer than hundreds of tenant-specific columns.
 
-## Modern implementation notes
+## Optional: modern implementation notes
 
 - Generate stable calendars as code or seed data, but source organization-specific fiscal and holiday assignments from accountable owners.
 - In dbt-style projects, test continuity, uniqueness, fiscal membership, and role-view column prefixes.

@@ -1,8 +1,20 @@
 # Learning Analytics: An End-to-End Dimensional Design
 
-This case study models a learning platform used by employees, customers, or students. It is intentionally broader than a single dashboard: it supports engagement analysis, assessment performance, live attendance, course progression, compliance, and historical organizational reporting.
+This case study models a learning platform used by employees, customers, or students.
 
-The design illustrates how several fact tables cooperate without mixing grains.
+Start with one learner, Ana. She enrolls in a SQL course, watches two videos, submits a quiz, attends a live session, and completes the course. It is tempting to put that whole journey in one “learning” table. But each part has a different row meaning:
+
+| What happened | Best row meaning |
+|---|---|
+| Ana watched a video | One learning-object event |
+| Ana submitted a quiz | One assessment attempt |
+| Ana joined a webinar | One attendance record |
+| Ana progressed through the course | One enrollment lifecycle |
+| Ana was overdue at month end | One monthly requirement snapshot |
+
+The design therefore uses several fact tables that share dimensions such as User, Course, Organization, and Date. Together they support engagement, assessment performance, attendance, progression, compliance, and historical reporting without mixing grains.
+
+On a first reading, focus on the business questions, bus matrix, six fact grains, and measures table. The bridge, historical key-resolution, late-data, SQL, and platform sections are implementation deep dives.
 
 ## Business questions
 
@@ -40,11 +52,11 @@ flowchart LR
     M --> A[Dashboards, analysis, operations, AI]
 ```
 
-The raw/cleaned layers are modern implementation choices. The dimensional rules begin with business process, grain, dimensions, and facts. A Bronze/Silver/Gold implementation, dbt project, lakehouse, HANA model, or Datasphere space can all host this logical design.
+The raw and cleaned layers are implementation choices. The dimensional rules begin with the business process, grain, dimensions, and facts. Bronze/Silver/Gold, dbt, a lakehouse, HANA, or Datasphere can all host the same logical design.
 
 ## Bus matrix
 
-The bus matrix shows which conformed dimensions apply to each process. A filled circle means the dimension participates at that row's declared grain.
+A **bus matrix** is a map of which shared dimensions apply to which business processes. Read one row at a time. A filled circle means that dimension can describe a row in that fact table.
 
 | Business process / fact | Date | Time | User | Organization | Course | Learning object | Assessment | Live session | Status | Event type | Device | Geography | Skill group |
 |---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
@@ -57,9 +69,13 @@ The bus matrix shows which conformed dimensions apply to each process. A filled 
 
 ¹ The enrollment pipeline has several date roles: assigned, enrolled, started, first activity, completed, withdrawn, and due date.
 
-The matrix is not a license to join fact tables directly. It says the facts can be grouped independently by common conformed attributes and then drilled across.
+The matrix does not mean raw fact tables should be joined directly. It means each fact can be summarized by shared dimensions, such as Course and Month, and those summaries can then be compared. This is called drill-across.
 
 ## Conformed dimensions
+
+**Conformed** means that a shared dimension has the same keys and business meaning wherever it is used. For example, Course should not mean a course version in one fact and a course family in another without making that difference explicit.
+
+In the table sketches below, `FK` means a foreign key to a dimension and `DD` means a business identifier kept directly in the fact, such as an event or enrollment ID.
 
 ### User
 
@@ -83,7 +99,7 @@ dim_user
   is_current
 ```
 
-Department, organization, manager, employment type, and geography may be Type 2 attributes when the business needs activity reported under the context valid at event time. The facts also carry the conformed `organization_key` directly, avoiding a required fact-to-user-to-organization snowflake for routine analysis.
+Department, organization, manager, employment type, and geography may need Type 2 history when reports must show the learner's context at the time of activity. Facts also carry `organization_key` directly so a common report does not need an extra User-to-Organization join.
 
 Use the key meanings precisely:
 
@@ -143,7 +159,7 @@ fact_learning_object_event
 
 ### Load behavior
 
-Insert one row per deduplicated source event. `event_id` or a documented composite identity must make retries idempotent. Retain both event time and processing metadata outside or alongside the analytical columns so late events are visible.
+Insert one row per deduplicated source event. `event_id`, or a documented combination of identity columns, must make retries safe so the same event is not added twice. This property is called **idempotency**. Retain both event time and processing metadata outside or alongside the analytical columns so late events are visible.
 
 ### Design cautions
 
@@ -174,13 +190,14 @@ fact_assessment_attempt
   attempt_number
   attempt_count             -- additive
   submitted_count           -- additive
+  graded_attempt_count      -- additive; 1 only when the attempt is graded
   passed_count              -- additive
   score_points              -- additive when point scales are compatible
   possible_points           -- additive component
   duration_seconds          -- additive, though averages are usually more useful
 ```
 
-`score_percentage` is derived as `SUM(score_points) / SUM(possible_points)` when a points-weighted result is intended. Average of row percentages answers a different question and should be named accordingly.
+For a points-weighted result, calculate `score_percentage` as `SUM(score_points) / SUM(possible_points)`. For example, scores of 8/10 and 1/2 combine to 9/12, or 75%. Averaging the two row percentages, 80% and 50%, would produce a different and usually unintended 65%.
 
 Distinct learners are non-additive across courses and periods. Calculate them at the requested query grain or use a governed approximate-distinct implementation.
 
@@ -207,7 +224,7 @@ fact_live_session_attendance
   late_join_count             -- additive
 ```
 
-This can be factless if the source records only presence. Adding `attendance_count = 1` and duration measures makes reporting easier without changing the grain.
+If the source records only that attendance happened, the table can be a **factless fact**: the row itself is the event. A constant `attendance_count = 1` is a convenient way to count those rows. If the source also supplies `attended_seconds`, the table becomes a measured transaction fact at the same attendance grain.
 
 Registration, attendance, and session capacity are different processes. To measure no-shows, compare a registration/coverage fact with attendance. Do not infer “not attended” merely from absence unless the eligible population is defined.
 
@@ -244,7 +261,7 @@ fact_enrollment_pipeline
 
 Insert when the lifecycle begins, then update the same row as milestones occur. Future milestone foreign keys point to a “not yet occurred” date member rather than null.
 
-This table optimizes current pipeline questions. It does not preserve every intermediate status. The atomic events remain the rebuild and audit trail.
+This table makes current progress questions easy, such as “How many enrollments are started but not completed?” It does not preserve every intermediate status. Keep the underlying events when a full history or rebuild path is required.
 
 If reenrollment is allowed, `enrollment_id` must distinguish attempts. A user-course grain would merge separate lifecycles and corrupt durations.
 
@@ -321,9 +338,9 @@ Do not sum requirement counts over several month ends and call the result “emp
 | `overdue_requirement_count` | Monthly snapshot | Semi-additive across time | Sum within one month; compare month ends | Repeated obligation across months |
 | Distinct learners | Derived | Non-additive | Recompute at query grain | Cannot sum across overlapping groups |
 
-## Multivalued skills bridge
+## Advanced: multivalued skills bridge
 
-A course can teach several skills. Adding one `skill_key` to a fact loses skills; copying the fact once per skill double counts learning time.
+A course can teach several skills. One `skill_key` would lose the other skills, while copying the full learning time once for every skill would inflate the total. A **bridge** represents the many-to-many relationship explicitly.
 
 Stamp a `skill_group_key` on each fact row and resolve it through a bridge:
 
@@ -346,7 +363,7 @@ Use effective dates or immutable group versions when course-to-skill mappings ch
 
 If no defensible allocation exists, expose skill impact counts with a visible warning rather than inventing false precision.
 
-## SCD history and fact-key resolution
+## Advanced: historical key resolution
 
 For every incoming fact:
 
@@ -365,7 +382,7 @@ where u.durable_user_key = :durable_user_key
 
 The half-open interval prevents two versions from matching at a boundary. Current reporting can join through a separately governed current-user perspective; it must not overwrite the historical fact key.
 
-## Late and out-of-order data
+## Advanced: late and out-of-order data
 
 ### Late learning event
 
@@ -400,7 +417,7 @@ Webinar attendance may arrive hours after the session. Upsert by stable attendan
 
 Apply enrollment milestones by event time, not ingestion order. A completion received before a delayed start event should not make the start date later than completion. Retain raw events and rebuild the accumulating row deterministically.
 
-## Sample metric SQL
+## Optional: sample metric SQL
 
 ### Weighted assessment score and pass rate
 
@@ -408,8 +425,8 @@ Apply enrollment milestones by event time, not ingestion order. A completion rec
 select
     d.calendar_month,
     c.course_title,
-    sum(f.score_points) / nullif(sum(f.possible_points), 0) as weighted_score_ratio,
-    sum(f.passed_count) / nullif(sum(f.submitted_count), 0) as pass_rate,
+    1.0 * sum(f.score_points) / nullif(sum(f.possible_points), 0) as weighted_score_ratio,
+    1.0 * sum(f.passed_count) / nullif(sum(f.graded_attempt_count), 0) as pass_rate,
     sum(f.attempt_count) as attempts,
     count(distinct u.durable_user_key) as distinct_learners
 from fact_assessment_attempt f
@@ -446,7 +463,7 @@ The bridge interval can be avoided if every change creates an immutable new skil
 select
     snapshot_date.calendar_month,
     org.organization_name,
-    sum(f.completed_requirement_count)
+    1.0 * sum(f.completed_requirement_count)
       / nullif(sum(f.requirement_count), 0) as compliance_rate,
     sum(f.overdue_requirement_count) as overdue_requirements
 from fact_required_learning_monthly_snapshot f
@@ -459,7 +476,7 @@ group by snapshot_date.calendar_month, org.organization_name;
 
 Filter to one month for a point-in-time compliance population; do not sum the same requirements across successive snapshots.
 
-## Physical and semantic delivery
+## Optional: platform delivery notes
 
 ### SQL/dbt-style workflow
 
@@ -493,7 +510,7 @@ Govern at least these definitions centrally:
 
 Physical correctness cannot prevent two dashboards from choosing different denominators. Metric governance completes the architecture.
 
-## Design review
+## Beginner design review
 
 ### Grain and identity
 

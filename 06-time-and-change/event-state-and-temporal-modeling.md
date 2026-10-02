@@ -1,20 +1,39 @@
 # Event, State, and Temporal Modeling
 
-Analytical systems answer three different kinds of question:
+## Start with a support ticket
+
+Imagine ticket `T-17`:
+
+```text
+09:00  ticket opened
+09:15  assigned to Ana
+11:30  status changed to resolved
+```
+
+The same ticket can be represented in several useful ways:
+
+| Question | Useful row design |
+|---|---|
+| What happened, and in what order? | One row per ticket event |
+| What is the ticket's status now? | One current row for the ticket |
+| How many tickets were open at each day end? | One snapshot row per ticket per day |
+| What status was valid at 10:00? | One row per continuous status interval |
+
+The ticket example illustrates events and state. A third question appears when late corrections arrive: what did the warehouse believe before it received the correction? This chapter therefore distinguishes three kinds of time-related question:
 
 1. **What happened?** — events.
 2. **What was the state at a point or period?** — snapshots or intervals.
 3. **What did we believe at the time?** — system-time history.
 
-Confusing these questions is a common cause of tables that are technically queryable but semantically unreliable.
+These questions sound similar, but they need different rows. None of the designs is universally “best.” Each answers a different question.
 
-> Events explain change. State describes a moment. Temporal metadata says when each statement was valid or known.
+> Events say what changed. State says what was true at a moment. Temporal metadata says when a statement was true and when the platform knew it.
 
-The formal terms in this chapter are a modern synthesis. Kimball's transaction facts, periodic snapshots, accumulating snapshots, Type 2 dimensions, and timespan facts provide many of the underlying structures, but the book does not present a complete formal bitemporal framework.
+The formal terms in this chapter build on Kimball's transaction facts, periodic snapshots, accumulating snapshots, Type 2 dimensions, and timespan facts. The later bitemporal section adds a more advanced modern framework.
 
 ## Event modeling
 
-An event is an occurrence with business identity and time.
+An **event** records something that happened at a particular business time.
 
 ### Grain
 
@@ -39,7 +58,7 @@ fact_subscription_event
   amount_delta
 ```
 
-Events are naturally append-oriented and auditable. They preserve sequence and causality better than a current-state table. They also make current state a computation: the platform must order and interpret events, handle corrections, and know which transitions supersede others.
+Events are usually appended rather than overwritten. They preserve sequence and provide a strong audit trail. The tradeoff is that “what is true now?” must be calculated by ordering and interpreting the events, including corrections.
 
 ### Use events when
 
@@ -48,7 +67,9 @@ Events are naturally append-oriented and auditable. They preserve sequence and c
 - changes occur irregularly;
 - future analyses may require detail that a snapshot would discard.
 
-### Do not assume
+### Important cautions
+
+Do not assume that:
 
 - an arrival timestamp is the business event timestamp;
 - events arrive in order;
@@ -57,7 +78,7 @@ Events are naturally append-oriented and auditable. They preserve sequence and c
 
 ## Current-state modeling
 
-A current-state table keeps only the latest accepted representation of an entity.
+A **current-state table** keeps only the latest accepted version of an entity.
 
 ### Grain
 
@@ -65,19 +86,19 @@ A current-state table keeps only the latest accepted representation of an entity
 
 Examples: one row per active subscription, one row per current employee assignment, or one row per support ticket.
 
-Current-state models are simple and fast for operational questions such as “which accounts are active now?” They cannot answer what the state was last quarter after values are overwritten.
+Current-state models are simple and fast for questions such as “which accounts are active now?” After a value is overwritten, however, the table cannot say what it was last quarter.
 
 A Type 1 dimension is a current-state pattern for descriptive attributes. An accumulating snapshot is current pipeline state for a lifecycle. Neither preserves every prior state by itself.
 
 ## Derived state
 
-State can be derived by folding events up to a cutoff:
+Current or historical state can sometimes be calculated by applying all events up to a chosen time:
 
 ```text
 state(entity, t) = initial_state + ordered_effect(events where event_time <= t)
 ```
 
-This is attractive when event semantics are complete and stable. It becomes difficult when:
+This works when the event history and its rules are complete and stable. It becomes difficult when:
 
 - the source omits events or changes their meaning;
 - corrections cancel or replace prior events;
@@ -85,7 +106,7 @@ This is attractive when event semantics are complete and stable. It becomes diff
 - derivation logic evolves;
 - replaying years of events is expensive.
 
-A common architecture retains events as the durable base and materializes current state plus periodic snapshots for usability and performance.
+A common design keeps events as the durable history and builds current-state and periodic-snapshot tables for easier, faster reporting.
 
 ## Snapshot state
 
@@ -93,7 +114,7 @@ A common architecture retains events as the durable base and materializes curren
 
 > **One row represents one entity's state at one standard period boundary.**
 
-It preserves sampled history — daily balances, monthly headcount, weekly active subscriptions — whether or not anything changed.
+It takes regular “photos” of the state: daily balances, monthly headcount, or weekly active subscriptions. It writes a row at every scheduled boundary even when nothing changed.
 
 ### Timespan state
 
@@ -108,13 +129,13 @@ account_status_history
   is_current
 ```
 
-An interval representation avoids repeating unchanged daily states, but point-in-time queries require a range predicate and interval integrity. It resembles Type 2 treatment applied to state or facts.
+This design avoids copying the same unchanged state every day. To find the state at one time, a query must check which interval contains that time. The intervals must not overlap accidentally.
 
 ### Accumulating snapshot
 
 > **One row represents one lifecycle instance in its latest known milestone state.**
 
-It is not a complete history of intermediate states because updates overwrite the row. Pair it with events, periodic snapshots, or timespan versions when users need historical pipeline reconstruction.
+Milestone dates sit side by side, which makes lifecycle analysis convenient. Because later updates overwrite the same row, it is not a complete history. Pair it with events or historical snapshots when users need to reconstruct what the pipeline looked like in the past.
 
 ## Choosing event, state, or both
 
@@ -127,13 +148,22 @@ It is not a complete history of intermediate states because updates overwrite th
 | Reproduce order status at any instant | Events or timespan state | Preserves transitions/intervals |
 | Explain both activity and resulting state | Event fact plus snapshot/state model | Different questions require different grains |
 
-Avoid forcing one table to serve all of these. A transaction event and a daily state row are different business processes even when they share an entity identifier.
+Do not force one table to answer all of these questions. A ticket event and a daily ticket-state row have different grains even though both contain the same ticket ID.
 
 ## Valid time and system time
 
+Suppose an employee moved departments on March 15, but HR sent the correction to the warehouse on March 20:
+
+| Time | Meaning |
+|---|---|
+| March 15 | The transfer became true in the business |
+| March 20 | The warehouse learned about the transfer |
+
+March 15 belongs to **valid time**. March 20 belongs to **system time**.
+
 ### Valid time
 
-Valid time answers:
+**Valid time** answers:
 
 > When was this statement true in the business domain?
 
@@ -143,11 +173,11 @@ Examples:
 - a product price applied from 09:00 until 17:00;
 - an account balance is the closing state for June 30.
 
-Common columns are `valid_from` and `valid_to`, ideally using half-open intervals `[from, to)`.
+Common columns are `valid_from` and `valid_to`. A common rule includes the start but excludes the end: `[valid_from, valid_to)`. This lets one version end exactly when the next one begins.
 
 ### System time
 
-System time answers:
+**System time** answers:
 
 > When did this platform store or believe this version?
 
@@ -157,11 +187,11 @@ Examples:
 - a correction was accepted on April 3;
 - a row was superseded during pipeline run 8142.
 
-Common columns are `recorded_from` and `recorded_to`, or immutable ingestion and supersession timestamps.
+Common columns are `recorded_from` and `recorded_to`, or unchangeable ingestion and replacement timestamps.
 
-### Bitemporal modeling
+### Advanced: bitemporal modeling
 
-Bitemporal data carries both axes:
+**Bitemporal** data keeps both timelines. It can answer “what is our best current understanding of March 15?” and “what did the March 18 report show?”
 
 ```text
 employee_department_history
@@ -173,24 +203,21 @@ employee_department_history
   recorded_to      -- warehouse stopped believing this version
 ```
 
-One correction can create several rows because the platform must retain both the corrected valid-time interval and the history of what it previously believed.
+One correction can create several rows because the platform retains both the corrected business history and the earlier version it once believed.
 
 ```mermaid
-quadrantChart
-    title Two temporal questions
-    x-axis Earlier valid time --> Later valid time
-    y-axis Learned earlier --> Learned later
-    quadrant-1 Current knowledge about recent business time
-    quadrant-2 Late correction about recent business time
-    quadrant-3 Original knowledge about older business time
-    quadrant-4 Late correction about older business time
+flowchart LR
+    V[Valid time<br/>When was it true?] --> B[Bitemporal history]
+    S[System time<br/>When did we know?] --> B
+    B --> Q1[Corrected business view]
+    B --> Q2[As-originally-known view]
 ```
 
-Bitemporal modeling is valuable when users must reproduce an earlier publication and also see corrected business history. It is unnecessary complexity when a subject only needs current attributes or ordinary Type 2 valid history.
+Bitemporal modeling is valuable when users need both corrected history and an exact reproduction of an earlier publication. It is unnecessary when the subject needs only current attributes or ordinary Type 2 history.
 
-## SCD Type 2 is not automatically bitemporal
+## Advanced: why SCD Type 2 is not automatically bitemporal
 
-A typical Type 2 dimension stores business-effective intervals and the current version. If a retroactive correction edits or rebuilds those rows without retaining the superseded warehouse belief, only one time axis remains queryable.
+A typical Type 2 dimension stores business-effective intervals. If a late correction rebuilds those rows and discards the versions that the warehouse previously believed, users can query only one timeline.
 
 To claim bitemporal support, the design must preserve:
 
@@ -199,11 +226,11 @@ To claim bitemporal support, the design must preserve:
 - prior assertions after correction;
 - query semantics for both “as valid” and “as known.”
 
-Do not rename `created_at` and `updated_at` as system-time history if overwritten rows cannot be reconstructed.
+Two timestamp columns do not make a table bitemporal. If overwritten rows cannot be reconstructed, it does not preserve system-time history.
 
 ## Point-in-time joins
 
-For valid-time history, a point-in-time join looks like:
+A point-in-time join asks: “which version was valid when this event happened?” For example, an event at 10:30 should join the employee version whose interval contains 10:30:
 
 ```sql
 select ...
@@ -214,16 +241,16 @@ join dim_employee_version d
  and f.event_ts <  d.valid_to;
 ```
 
-In a conventional star, perform this lookup during loading and store `employee_sk` in the fact. Query-time range joins are appropriate when the model intentionally exposes interval history, but they are easier to get wrong and can be more expensive.
+In a conventional star, perform this lookup in the data pipeline and store the selected `employee_sk` on the fact. Query-time range joins make sense when users intentionally explore interval history, but they are easier to get wrong and can cost more to run.
 
-For bitemporal reconstruction, add a system-time cutoff:
+For the advanced bitemporal case, add a second condition for what the warehouse knew at the requested time:
 
 ```sql
 and :as_known_at >= d.recorded_from
 and :as_known_at <  d.recorded_to
 ```
 
-Every interval table needs tests for overlap, boundaries, and the treatment of gaps.
+Test every interval table for overlaps, exact boundaries, and any unexpected gaps.
 
 ## Example: learning enrollment
 
@@ -242,7 +269,7 @@ Useful projections are:
 - `fact_enrollment_daily_snapshot`: one row per open enrollment per day — historical backlog and aging;
 - `dim_user` Type 2: one row per user profile version — department/region history.
 
-The tables are not redundant. Each has a distinct grain and query purpose.
+These tables contain related data, but they are not duplicates. Each row means something different and answers a different question.
 
 If the completion arrives late, resolve the user's dimension version at completion event time and apply the published restatement policy. See [Late-arriving data](late-arriving-data.md).
 
@@ -268,13 +295,23 @@ If the completion arrives late, resolve the user's dimension version at completi
 | Timespan state | Proportional to changes | Close/open intervals | Range joins | Continuous valid-state history |
 | Bitemporal | Highest | Version both axes | Most complex | Valid and known-at-the-time reconstruction |
 
-## Modern implementation notes
+## Optional: modern implementation notes
 
 - Event streaming does not remove the need for dimensional models; it changes arrival mechanics. Consumers still need stable business grain, dimensions, and metric definitions.
 - Lakehouse table versions provide storage-level time travel, not automatically business valid time. Retention limits and table rewrites may also make them unsuitable as the only audit design.
 - CDC describes row changes in a source database. Those changes are not necessarily business events and may need interpretation before entering a transaction fact.
 - A semantic layer can expose safe “as of” parameters or current views, but it should not conceal which temporal question a metric answers.
 - SAP Datasphere time-dependent dimensions and HANA validity logic can implement interval semantics; document whether the model returns current, event-time, or as-known attributes.
+
+## Beginner review checklist
+
+- [ ] Am I answering “what happened?”, “what was the state?”, or “what did we know?”
+- [ ] Can I explain exactly what one row represents?
+- [ ] Are business event time and processing time stored separately?
+- [ ] If I need trends, have I chosen a suitable snapshot boundary?
+- [ ] Do time intervals avoid overlaps and handle exact boundaries consistently?
+- [ ] Do I genuinely need both valid-time and system-time history?
+- [ ] Are state measures protected from accidental summing across time?
 
 ## Related patterns
 

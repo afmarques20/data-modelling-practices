@@ -1,10 +1,19 @@
 # Advanced Fact Designs
 
-Advanced fact techniques solve problems that do not fit a single atomic event or regular snapshot. They are useful only after the base business process and grain are correct.
+> **Optional chapter:** return here after the basic fact-table patterns are comfortable.
+
+Advanced fact designs solve specific problems that remain after the base business process and grain are correct. For example:
+
+- an order-line table is correct but too slow for a repeated monthly dashboard;
+- a shipping charge belongs to an order, while users want to analyze it by product line;
+- transactions arrive in several currencies but reports need one standard currency;
+- users need to measure how long a case takes between two milestones.
+
+Each problem has a different technique. These techniques refine a sound fact model; they do not repair an unclear one.
 
 > **An optimization, allocation, or consolidation must never conceal a grain mismatch.**
 
-Use this chapter after [Grain](../01-foundations/grain.md), [Measures](../01-foundations/measures.md), and [Fact table patterns](fact-table-patterns.md).
+Use this chapter after [Grain](../01-foundations/grain.md), [Measures](../01-foundations/measures.md), and [Fact table patterns](fact-table-patterns.md). You do not need to memorize every technique. Start with the problem in the left column of the chooser and read the matching section when it becomes relevant.
 
 ## Fast chooser
 
@@ -14,7 +23,7 @@ Use this chapter after [Grain](../01-foundations/grain.md), [Measures](../01-fou
 | One frequent view across processes | Consolidated fact | All measures expressible at exactly the same grain | Combining incompatible processes |
 | Analyze header measures by line attributes | Governed allocation | Header amount allocated completely to atomic lines | False precision or unreconciled totals |
 | Analyze across currencies or units | Dual measures plus conversion factors | Original and standardized values at the same fact grain | Mixing bases or rates |
-| Report ratios, YTD, or rolling values | Derived measure | Derived at the requested query context | Summing precomputed results |
+| Report ratios, year-to-date (YTD), or rolling values | Derived measure | Derived at the requested query context | Summing precomputed results |
 | Analyze process speed | Anchor-based lag/duration facts | Duration belongs to one lifecycle row/event pair | Conflicting clocks and calendars |
 | Store changing state without repeated periodic rows | Timespan fact | One row per state version and validity interval | Overlaps and difficult as-of joins |
 | Preserve historical accumulating states | Timespan accumulating snapshot or event history | One row per lifecycle-state version | Row explosion and late-event restatement |
@@ -26,9 +35,11 @@ Use this chapter after [Grain](../01-foundations/grain.md), [Measures](../01-fou
 
 An atomic fact may contain billions of rows while most dashboards repeatedly ask for a stable summary, such as monthly revenue by product category and country. Scanning the atomic table can be unnecessarily expensive.
 
-### Mental model
+### A simple way to think about it
 
-**An aggregate fact is a performance structure over atomic truth, comparable to an index in purpose even though it stores summarized measurements.**
+**Keep the detailed facts as the source of truth, and add a pre-summarized table for a repeated query.**
+
+It serves a purpose similar to an index: faster access without changing what the underlying data means. Unlike a normal index, however, it stores summarized measurements and needs its own declared grain.
 
 ### Grain
 
@@ -144,7 +155,7 @@ Users repeatedly compare measurements from several business processes and want o
 - learning assignments versus completions;
 - inventory receipts versus shipments.
 
-### Mental model
+### A simple way to think about it
 
 **Consolidate measures only after every process has been expressed at one identical grain.**
 
@@ -166,11 +177,11 @@ monthly budget ----conform-----+      actual_amount
                                       forecast_amount
 ```
 
-The facts must also be **conformed facts**: amounts with the same names must have identical definitions, units, sign conventions, and calculation rules.
+Amounts with the same names must have identical definitions, units, sign conventions, and calculation rules. Measures that meet this requirement are called **conformed facts**.
 
 ### Why this works
 
-A consolidated fact moves frequently repeated multipass logic into a governed pipeline. Reports become simpler because the hard grain alignment is performed once and reconciled.
+A consolidated fact moves a frequently repeated comparison into one controlled pipeline. Reports become simpler because the difficult grain alignment is performed and checked once.
 
 ### When to use
 
@@ -183,7 +194,7 @@ A consolidated fact moves frequently repeated multipass logic into a governed pi
 
 - Processes only appear similar but represent different events.
 - One source is at a coarser level that cannot be allocated legitimately.
-- Consolidation would create pervasive null measures.
+- Most measure columns would be empty for most rows.
 - Users need dimensions available in only one atomic process.
 
 ### Common mistakes
@@ -196,7 +207,7 @@ A consolidated fact moves frequently repeated multipass logic into a governed pi
 
 ### Tradeoffs
 
-Consolidation adds pipeline work and can discard detail, but it makes an important comparison easier and more governable. If the comparison is occasional, drill across independently aggregated facts may be more flexible. See [Conformance and bus architecture](../05-enterprise-modeling/conformance-and-bus-architecture.md).
+Consolidation adds pipeline work and can discard detail, but it makes an important comparison easier and more consistent. If the comparison is occasional, drill across independently aggregated facts may be more flexible. See [Conformance and bus architecture](../05-enterprise-modeling/conformance-and-bus-architecture.md).
 
 ## Header and line-item modeling
 
@@ -384,7 +395,7 @@ Constituency-specific views can expose preferred units while one standard measur
 
 Users want margin percentages, year-to-date revenue, rolling averages, and cumulative completions. These values depend on filter and time context.
 
-### Mental model
+### A simple way to think about it
 
 **Store stable components; derive context-dependent answers after aggregation.**
 
@@ -499,7 +510,7 @@ A state changes irregularly, and copying unchanged values into every daily or mo
 
 This technique is sometimes described as a slowly changing fact or timespan-tracking fact. It is an exception, not the default fact design.
 
-### Mental model
+### A simple way to think about it
 
 **One row owns a non-overlapping interval during which the measured state was valid.**
 
@@ -636,7 +647,7 @@ Separate tables or views are often clearer than mixed-frequency rows.
 
 ### The problem
 
-A fact's natural key may be composite, mutable during correction, or awkward for ETL restart. A single technical row identifier can simplify physical operations.
+A fact's natural key may be composite, mutable during correction, or awkward for extract-transform-load (ETL) restart. A single technical row identifier can simplify physical operations.
 
 ### Grain
 
@@ -689,7 +700,7 @@ Advanced facts introduce decisions that must be owned:
 
 Without these contracts, advanced tables create easier access to less trustworthy numbers.
 
-## Modern implementation notes — later synthesis
+## Optional: modern implementation notes
 
 The dimensional techniques above are grounded in Kimball. The implementation mappings below are modern synthesis.
 

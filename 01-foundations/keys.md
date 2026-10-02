@@ -1,13 +1,22 @@
 # Keys: Business Identity, Warehouse Identity, and History
 
-Keys answer two different questions:
+Keys help a warehouse remember both **who or what something is** and **which historical version was valid**.
+
+Suppose customer `18429` was in the `Small business` segment in March and moved to `Enterprise` in April. These two facts can both be true:
+
+| order | order date | source customer ID | segment at the time |
+|---|---|---|---|
+| 9001 | 2026-03-11 | 18429 | Small business |
+| 9440 | 2026-06-02 | 18429 | Enterprise |
+
+The source ID identifies the customer record, but it cannot by itself tell us which segment description to use for each order. The warehouse therefore separates two questions:
 
 1. Which real-world entity or event is this?
 2. Which warehouse row — including which historical version — represents it?
 
-Treating those questions as identical works only while one source identifier remains stable, unique, and history-free. Analytical systems usually outlive that assumption.
+Treating those questions as identical works only while a source identifier never changes, collides, or gains history. That is often too fragile for a long-lived analytical system.
 
-## The problem
+## Why one key is often not enough
 
 Source identifiers can:
 
@@ -21,9 +30,9 @@ Source identifiers can:
 
 If facts use source keys as if they were permanent enterprise keys, source changes leak into every join. If facts join historical observations to the current dimension row, old results are silently restated.
 
-## Mental model
+## The three key jobs
 
-Use a three-level mental model:
+The names can feel abstract at first. Start with the job each key performs:
 
 | Question | Key concept | Example |
 |---|---|---|
@@ -35,7 +44,7 @@ A compact mnemonic is:
 
 > **Natural key identifies a source record; durable key identifies the entity; surrogate key identifies the dimension row or version.**
 
-The common shortcut “business key = entity, surrogate key = version” is useful but incomplete. A source business key may change, collide, or be reused. When those risks matter, the warehouse needs a durable entity identity that it controls.
+The shortcut “business key = entity, surrogate key = version” is useful for learning, but it is not always enough. A source business key may change, collide, or be reused. When those risks matter, the warehouse needs a durable entity identity that it controls.
 
 ## Grain
 
@@ -132,7 +141,7 @@ A transaction identifier such as order number, invoice number, or assessment att
 A warehouse-generated fact row key may help:
 
 - identify one physical fact row;
-- resume or restart ETL;
+- resume or restart extract-transform-load (ETL) processing;
 - decompose an update into delete-plus-insert;
 - attach operational audit records;
 - target corrections efficiently.
@@ -230,9 +239,9 @@ Type 2 control dates are not a substitute for a foreign key. They make validity 
 
 ## Unknown and inferred members
 
-### Governed sentinel members
+### Special members for missing conditions
 
-Every dimension should define the special members its process needs. For example:
+Instead of leaving a fact foreign key null, a warehouse often points it to a dedicated dimension row with an explicit meaning. These rows are sometimes called **sentinel members**. For example:
 
 | Key | Meaning | Use |
 |---:|---|---|
@@ -266,15 +275,19 @@ The fact key remains stable and the missing entity retains its identity.
 
 ```mermaid
 erDiagram
-    DIM_CUSTOMER ||--o{ CUSTOMER_SOURCE_XREF : has_identifiers
+    CUSTOMER_IDENTITY ||--o{ DIM_CUSTOMER : has_versions
+    CUSTOMER_IDENTITY ||--o{ CUSTOMER_SOURCE_XREF : has_identifiers
+    CUSTOMER_IDENTITY {
+        string durable_customer_key_PK
+    }
     DIM_CUSTOMER {
         bigint customer_key_PK
-        string durable_customer_key
+        string durable_customer_key_FK
         string customer_name
         string segment
     }
     CUSTOMER_SOURCE_XREF {
-        string durable_customer_key
+        string durable_customer_key_FK
         string source_system
         string source_customer_id
         datetime valid_from
@@ -282,7 +295,7 @@ erDiagram
     }
 ```
 
-The cross-reference resolves source identifiers to the durable entity. The Type 2 dimension then resolves the correct historical version. Do not merge records solely because names or email addresses happen to match; entity resolution needs governed confidence, survivorship, and stewardship rules.
+The identity row represents one durable customer. The cross-reference maps source identifiers to that identity, while the Type 2 dimension stores its historical descriptive versions. The identity registry can be a physical table or a governed mapping service. Do not merge records solely because names or email addresses happen to match; entity resolution needs governed confidence, survivorship, and stewardship rules.
 
 ### Source key reuse
 
@@ -351,7 +364,7 @@ Surrogate and durable keys add lookup logic, mapping tables, and stewardship. Th
 
 The main architectural choice is where entity resolution is governed. Centralizing it improves cross-domain consistency but requires ownership and exception handling. Leaving it to each mart speeds local delivery but creates incompatible “customer” or “employee” identities.
 
-## Modern implementation notes — later synthesis
+## Optional: modern implementation notes
 
 The core key roles above are Kimball-derived. This section maps them to current platforms and engineering practice; these are modern implementation recommendations.
 
@@ -378,7 +391,7 @@ Use uniqueness and overlap tests on natural/durable key plus validity intervals.
 
 ### dbt-style snapshots
 
-Snapshot tooling can capture Type 2-like versions, but configuration still needs a stable source identity, dependable change timestamp or comparison strategy, and explicit handling of hard deletes and late corrections. Tool-generated keys do not remove semantic decisions.
+Snapshot tooling can capture Type 2-like versions, but configuration still needs a stable source identity, dependable change timestamp or comparison strategy, and explicit handling of hard deletes and late corrections. Tool-generated keys do not remove the need to decide what each key and historical change means.
 
 ### SAP HANA Cloud and SAP Datasphere
 

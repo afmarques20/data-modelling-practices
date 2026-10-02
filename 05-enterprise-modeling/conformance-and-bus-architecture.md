@@ -1,8 +1,25 @@
 # Conformance and the Enterprise Bus Architecture
 
-Independent stars are easy to build and hard to reconcile. If sales, subscriptions, learning, support, and finance each define customer, product, date, and revenue differently, the platform contains several fast reporting silos rather than an integrated analytical system.
+Separate star schemas are useful, but they need shared definitions to work together. If sales, subscriptions, learning, support, and finance each define customer, product, date, and revenue differently, every individual report may look reasonable while cross-process reports disagree.
 
-The Kimball bus architecture provides an incremental alternative: deliver one business process at a time, but make those processes fit together through governed conformed dimensions and facts.
+The **Kimball bus architecture** solves this by delivering one business process at a time while reusing agreed dimensions and measures. Those shared definitions are called **conformed dimensions** and **conformed facts**.
+
+## Start with two reports
+
+Suppose a company wants to compare product usage with course completions:
+
+- the product team identifies Ana as user `APP-184` and labels her country `PT`;
+- the learning team identifies the same Ana as learner `LMS-992` and labels her country `Portugal`.
+
+Joining on either source ID fails. Grouping by the two country labels creates two rows. The teams need one enterprise user identity and one agreed country definition:
+
+```mermaid
+flowchart LR
+    U[Conformed user<br/>enterprise user 42<br/>country Portugal] --> P[Product usage facts]
+    U --> L[Learning completion facts]
+```
+
+The two fact tables still have different grains. They can nevertheless align results by the shared user and country definitions.
 
 ## The problem
 
@@ -13,20 +30,22 @@ Teams often begin with local requirements:
 - Finance needs legal entity, cost center, and fiscal period.
 - Product analytics needs account, user, feature, and event.
 
-Without an enterprise contract, each team invents keys, labels, hierarchies, and metric equations. Cross-process reports then depend on manual mappings and arguments over whose number is correct.
+Without a shared contract, each team invents keys, labels, hierarchies, and metric equations. Cross-process reports then depend on manual mappings and arguments about whose number is correct.
 
-## Mental model
+## The basic idea
 
-**The bus matrix is the blueprint. Conformed dimensions are the shared connectors. Fact tables are replaceable process modules.**
+**The bus matrix is the plan. Conformed dimensions are the shared connectors. Each fact table remains focused on one business process.**
 
-Like a hardware bus, a new process can connect without redesigning every existing process, provided it honors the common contracts.
+A bus matrix is a planning grid with business processes as rows and reusable dimensions as columns. It receives a fuller treatment later in this chapter.
+
+A new process can connect without redesigning the existing ones as long as it follows the shared contracts.
 
 ## Grain
 
-Conformance never removes the need to declare grain:
+Shared definitions do not make every table's rows identical. Write down each grain:
 
 - Each fact row has one process-specific measurement grain.
-- Each conformed dimension has one atomic member grain or an explicitly shrunken rollup grain.
+- Each conformed dimension has one atomic member grain or a smaller, higher-level version with its own clear grain.
 - Each bus-matrix row represents one business process, not one department or report.
 - Each bus-matrix column represents one reusable business dimension at its governed base meaning.
 
@@ -34,9 +53,9 @@ Conformance never removes the need to declare grain:
 
 ### Definition
 
-Dimensions conform when their shared attributes have compatible keys, names, definitions, domain values, and behavior, so those attributes can align results from different fact tables.
+A dimension is **conformed** when different processes use the same meaning for its shared identity and attributes. That includes compatible keys, names, definitions, allowed values, hierarchies, and history rules.
 
-The strongest form is one physical dimension reused by several stars. Physical sharing is not required: synchronized copies across platforms can conform if their contract is identical.
+The clearest design reuses one physical dimension across several stars. This is not mandatory: synchronized copies on different platforms can also conform if they follow the same contract.
 
 ### Example: conformed user
 
@@ -50,14 +69,14 @@ The strongest form is one physical dimension reused by several stars. Physical s
     ├── employment_status
     └── SCD metadata ...
 
-The same governed user meaning can be referenced by:
+The same governed user row can describe the user in several processes:
 
 - `fact_learning_event` at one row per user learning event;
 - `fact_feature_usage` at one row per user feature event;
 - `fact_user_month` at one row per user per month;
 - `fact_support_case` at one row per case.
 
-The fact grains differ. The user identity and shared attributes do not.
+The fact rows still mean different things. One row might be a feature click and another a completed course. Only the user identity and shared attributes are shared.
 
 ### What must conform
 
@@ -69,11 +88,11 @@ The fact grains differ. The user identity and shared attributes do not.
 - security classification and stewardship;
 - refresh expectations where synchronized copies exist.
 
-Two columns named `customer_segment` are not conformed if one uses current CRM segment and another uses event-time marketing segment. Conversely, dimensions can conform even if one contains extra process-specific attributes; only the common attributes can be used safely for cross-process alignment.
+Matching column names are not enough. Two `customer_segment` columns do not conform if one shows today's CRM segment and the other shows the segment at event time. Dimensions may also contain extra process-specific attributes; only the agreed common attributes are safe for cross-process alignment.
 
 ## Conformed facts
 
-Facts conform when the same label means the same equation, dimensional context, unit, sign convention, and timing rule everywhere.
+A **conformed fact** is a measure that means the same thing everywhere it appears. The equation, dimensions, unit, positive/negative sign, and timing rule all need to match.
 
 For example, `net_revenue` is not conformed unless teams agree on:
 
@@ -83,50 +102,57 @@ For example, `net_revenue` is not conformed unless teams agree on:
 - gross versus net sign handling;
 - treatment of cancelled or test transactions.
 
-If two measures differ, name them differently. A misleading common label is worse than visible disagreement.
+If two measures differ, give them different names. Visible differences are safer than a shared label that hides incompatible calculations.
 
-Facts from different processes do not need the same physical column or row grain to be conformed. They need an explicit common definition at the grain where comparison or addition is valid.
+The measures do not need to live in the same table. They need an agreed definition at the grain where users compare or add them.
 
-## Shrunken conformed dimensions
+## Conformance when processes use different detail
 
-Different processes can operate at different grains while sharing rollups.
+Sometimes one process has more detail than another. They can still share higher-level rollups through a **shrunken conformed dimension**.
 
 Example:
 
 - actual learning events: user-course-day;
 - workforce plan: organization-course-category-month.
 
-The plan cannot use the atomic user or day dimension. It can use governed shrunken dimensions:
+The plan contains no individual user or day, so it cannot honestly use those detailed dimensions. It can use smaller, higher-level dimensions:
 
 > One month row represents one reporting month, containing a strict subset of the daily date dimension's rollup attributes.
 
 > One course-category row represents one governed course category, containing shared category attributes from the atomic course dimension.
 
-The shrunken dimension's common attributes must have identical definitions and values. Its key is separate because its grain is different.
+The shared attributes must keep the same definitions and values. The shrunken dimension receives its own key because one of its rows represents something different.
 
-Two forms exist:
+Two common forms are:
 
 - **Attribute/rollup subset:** brand from product, month from date.
 - **Row subset:** one business line's rows from a corporate dimension at the same grain.
 
-For a row subset, the associated fact must be limited to the same population. Otherwise dimension foreign keys will not resolve and reports will silently omit data.
+For a row subset, the fact must cover the same population. Otherwise some foreign keys will not resolve and reports may silently lose data.
 
 ## The bus architecture
 
 ### Why this works
 
-The enterprise is decomposed by observable business process: order placed, shipment delivered, learning completed, subscription invoiced, support case resolved. Each process can be delivered incrementally, usually as one or more atomic fact tables, while reusing dimensions already governed for the enterprise.
+Break the enterprise into observable business processes: an order is placed, a shipment is delivered, a course is completed, a subscription is invoiced, or a support case is resolved. Build each process as one or more fact tables and reuse dimensions that the enterprise has already agreed.
 
 This balances two needs:
 
 - **Local delivery:** a team can ship a valuable process slice without waiting for an enterprise-wide “perfect model.”
 - **Global integration:** future slices can align because common dimensions and facts are deliberate contracts.
 
-The architecture is logical and technology-independent. Facts may live in different schemas or platforms; conformance is what makes integration possible.
+This approach does not depend on one database product. Facts can live in different schemas or platforms; shared definitions are what make them work together.
 
 ## The bus matrix
 
-Rows are business processes. Columns are conformed dimensions. An X means the process uses that dimension; a qualified marker such as `M` can indicate a shrunken month role.
+A **bus matrix** is a simple planning table:
+
+- each row is a business process;
+- each column is a reusable dimension;
+- `X` means the process uses that dimension;
+- a marker such as `M` can mean a higher-level month dimension.
+
+Read across a row to understand one process. Read down a column to see where a shared dimension needs governance.
 
 ### Example: learning and SaaS business
 
@@ -143,7 +169,7 @@ Rows are business processes. Columns are conformed dimensions. An X means the pr
 | Payment transaction | X |  | X |  |  |  | X | X |  | X |
 | Support case | X | X | X |  |  |  | X |  | X | X |
 
-The matrix exposes useful architecture questions:
+The matrix makes useful questions visible:
 
 - Does `User` mean the same learner and application user across both domains?
 - Does `Account` include internal tenants, prospects, and paying customers?
@@ -151,11 +177,11 @@ The matrix exposes useful architecture questions:
 - Can Course and Product share a broader offering hierarchy, or are they genuinely separate dimensions?
 - At which common grain can learning, usage, subscription, and payment metrics be compared?
 
-The correct answer may be limited conformance, not forced universality.
+Sometimes the honest answer is to share only a few attributes. Do not force unrelated concepts into one universal dimension.
 
 ### From enterprise matrix to implementation detail
 
-The enterprise matrix stays readable. A detailed implementation matrix can expand one process row into exact fact tables, fact types, grain statements, measures, date roles, and source systems.
+Keep the main matrix readable. A separate implementation matrix can expand one process into its exact fact tables, fact types, grains, measures, date roles, and sources.
 
 | Fact table | Type | Grain | Main measures |
 |---|---|---|---|
@@ -163,9 +189,9 @@ The enterprise matrix stays readable. A detailed implementation matrix can expan
 | `fact_course_enrollment` | Accumulating snapshot | One user enrollment in one course offering | days to start, days to complete |
 | `fact_user_learning_month` | Periodic snapshot | One user-course per reporting month | month-end progress, cumulative hours |
 
-Do not overload the executive bus matrix with every fact and attribute. Maintain both views for different audiences.
+Do not pack every fact and attribute into the high-level matrix. Keep a simple architecture view and a detailed implementation view for their different audiences.
 
-## How to build a bus matrix
+## How to build a bus matrix, step by step
 
 1. Identify the organization's value chain and observable business processes.
 2. Name process rows with verbs and business objects, not department names.
@@ -180,7 +206,7 @@ Do not overload the executive bus matrix with every fact and attribute. Maintain
 
 ## Data governance and ownership
 
-Conformance is an organizational agreement expressed in data, not a naming convention imposed by architects.
+Conformance is a business agreement expressed in data. Renaming columns does not create that agreement.
 
 For each shared dimension, establish:
 
@@ -193,9 +219,9 @@ For each shared dimension, establish:
 - schema and semantic versioning rules;
 - consumer notification and migration policy.
 
-IT can facilitate and implement. It cannot unilaterally resolve whether two customer definitions are equivalent or which revenue equation the enterprise should use.
+Technical teams can guide and implement the decision. Business owners still need to decide whether two customer definitions are equivalent and which revenue equation is correct.
 
-Start with a valuable common subset if full agreement is impossible. One governed product category or enterprise account identifier can enable real integration. Limited honest conformance is better than broad fictional conformance.
+If full agreement is impossible, start with a valuable common subset. One governed product category or enterprise account identifier can enable real integration. Small, honest conformance is better than pretending the entire enterprise already agrees.
 
 ## Using the matrix as an architecture tool
 
@@ -245,9 +271,9 @@ Do not wait for every attribute across the enterprise to be standardized before 
 | Simpler drill-across analysis | Shared identity resolution and data quality work |
 | Source-system independence | Mapping and stewardship pipelines |
 
-Conformance can feel slower at the beginning because disagreements become visible. That visibility is architectural value: the disagreement existed already and would otherwise surface in production reports.
+Agreeing shared definitions can feel slower at first because disagreements become visible. Those disagreements already existed; resolving them now is safer than discovering them in production reports.
 
-## Modern implementation notes
+## Optional: modern implementation notes
 
 - **Data contracts:** publish dimension grain, keys, shared attributes, SCD behavior, freshness, and quality tests as a versioned contract.
 - **dbt-style projects:** build shared dimensions once or from one governed package; use relationship and accepted-value tests in every consuming mart.
@@ -257,7 +283,7 @@ Conformance can feel slower at the beginning because disagreements become visibl
 - **SAP HANA:** calculation views can implement shared dimensions and star joins, but identical view names are not enough; key mapping, cardinality, and attribute semantics must conform.
 - **Master data management:** MDM can improve source identity and reference data, but a dimensional conformed dimension still needs analytical SCD and unknown-member rules.
 
-## Architectural consequences
+## What this changes at architecture level
 
 - **Scalability:** atomic process facts can scale independently while dimensions provide common access paths.
 - **Maintainability:** one governed definition reduces repeated transformation logic.
@@ -265,6 +291,16 @@ Conformance can feel slower at the beginning because disagreements become visibl
 - **Interoperability:** common keys and attributes make data products composable across tools.
 - **Governance:** ownership moves from dashboard-level reconciliation to explicit enterprise contracts.
 - **Query simplicity:** consumers align separately aggregated results on shared attributes rather than engineering bespoke source-to-source joins.
+
+## Beginner review checklist
+
+- [ ] Does every matrix row name a business process rather than a department or report?
+- [ ] Can I explain what one row means in every fact and shared dimension?
+- [ ] Do shared dimensions use the same identities, labels, values, and history rules?
+- [ ] Do measures with the same name use the same equation, unit, sign, and date rule?
+- [ ] Are higher-level processes using an honest shrunken dimension rather than invented detail?
+- [ ] Is there a named business owner for each shared contract?
+- [ ] Can every cross-process comparison state its common result grain?
 
 ## What to remember
 

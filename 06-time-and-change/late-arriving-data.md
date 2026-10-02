@@ -1,18 +1,37 @@
 # Late-Arriving Data
 
-Late data is a time-alignment problem, not merely a slow-pipeline problem. A record is late when it becomes available after the warehouse has already processed the business time to which it belongs.
+Data is **late arriving** when the warehouse receives it after processing the business time it belongs to. The difficult part is not only that the pipeline was slow. The warehouse must place the record back into the correct history.
 
 The governing rule is:
 
-> Model the business event at the time it happened, while separately recording when the platform learned about it.
+> Keep when the event happened separate from when the platform learned about it.
+
+## Start with one late completion
+
+Ana completed a course on Monday, March 2, but the learning system sent the record on Thursday, March 5.
+
+| Field | Correct value | Why |
+|---|---|---|
+| `completion_date` | March 2 | That is when the business event happened |
+| `loaded_at` | March 5 | That is when the warehouse processed it |
+| `user_key` | User version valid on March 2 | The fact should use the historical profile from event time |
+
+Using March 5 as the completion date would move the event into the wrong reporting period. Using Ana's current profile could also assign it to a department she joined after completing the course.
+
+```mermaid
+flowchart LR
+    E[March 2<br/>course completed] --> L[March 5<br/>record loaded]
+    E --> R[Report the completion<br/>in March 2 business history]
+    L --> A[Keep March 5<br/>for audit and freshness]
+```
 
 ## The problem
 
-A course completion from Monday arrives on Thursday. A customer event arrives before the customer's profile. A bank posts a back-valued transaction after the daily balance was published. An HR correction says an employee actually moved departments last month.
+A customer event can arrive before the customer's profile. A bank can post a back-valued transaction after publishing the daily balance. HR can report today that an employee actually moved departments last month.
 
-If the load simply uses current dimension values and today's date, the data becomes operationally convenient but historically false. If it silently rewrites old outputs, previously published results become irreproducible. A robust design makes lateness, correction, and restatement policies explicit.
+Using today's date and current dimension values is convenient but creates false history. Silently rewriting old outputs creates a different problem: users cannot reproduce a previously published report. The model therefore needs explicit rules for lateness, corrections, and restatement.
 
-## Mental model: two clocks, sometimes more
+## Two clocks: event time and processing time
 
 At minimum, distinguish:
 
@@ -21,7 +40,7 @@ At minimum, distinguish:
 | Event time | When the business event or state was valid | Course completed at 2026-03-02 14:12 UTC |
 | Processing time | When this pipeline handled it | Loaded on 2026-03-05 01:00 UTC |
 
-Useful operational timestamps often include source commit time, extraction time, ingestion time, transformation run time, and warehouse publication time. These are lineage fields, not substitutes for event time.
+The pipeline may also track source commit, extraction, ingestion, transformation, and publication times. These fields help with audit and monitoring, but none replaces the business event time.
 
 ```text
 business event      source commits       platform ingests      mart publishes
@@ -29,11 +48,11 @@ business event      source commits       platform ingests      mart publishes
      |<-------------------------- observed lateness ----------------->|
 ```
 
-Use event time for historical dimension resolution and business-period attribution. Use processing timestamps for observability, service-level monitoring, replay, and audit.
+Use event time to choose the reporting period and historical dimension version. Use processing time to monitor delays, replay loads, and audit the pipeline.
 
 ## Late-arriving facts
 
-A late-arriving fact describes an event that occurred earlier than its arrival in the analytical pipeline.
+A **late-arriving fact** records an event whose business time is earlier than its arrival time.
 
 ### Grain
 
@@ -43,7 +62,7 @@ Example: one row in `fact_course_completion` represents one user's completion at
 
 ### Resolve dimensions as of event time
 
-Suppose user `U-42` moved from the Retail division to Enterprise on March 1. A February 27 completion arrives on March 4. The fact should normally point to the Retail version of the Type 2 user dimension because that version was valid at the event time.
+Suppose user `U-42` moved from Retail to Enterprise on March 1. A February 27 completion arrives on March 4. The fact should normally point to the Retail version of the Type 2 user dimension because that was the version valid on February 27.
 
 ```sql
 select user_sk
@@ -54,11 +73,11 @@ where source_system = :source_system
   and :event_ts < valid_to;
 ```
 
-Use half-open effective intervals — `[valid_from, valid_to)` — so adjacent versions do not overlap at a boundary. Once the lookup returns the surrogate key, the fact stores it. Normal analytical joins use that key; they do not repeat the date-range lookup on every query.
+Use intervals that include `valid_from` and exclude `valid_to`. One version can then end exactly when the next begins without overlapping. Store the surrogate key returned by this lookup on the fact so ordinary reports can use a simple equality join.
 
 ### Choose the business date deliberately
 
-For the late completion, `completion_date_key` comes from the completion timestamp, not the load date. Keep `loaded_at` or an audit dimension separately.
+For a late completion, `completion_date_key` comes from the completion timestamp, not the load date. Store `loaded_at` separately for monitoring and audit.
 
 ```text
 fact_course_completion
@@ -71,25 +90,25 @@ fact_course_completion
 
 ### Effects on snapshots
 
-Late events can change previously published state. A back-valued bank transaction may affect:
+Late events can change state that was already published. A back-valued bank transaction may affect:
 
 - the transaction fact for its original posting date;
 - the account's closing balance on that date;
 - every later balance if the source supplies deltas rather than authoritative closings;
 - monthly averages and downstream aggregates.
 
-The snapshot policy must say whether to:
+The business must choose what published snapshots do when this happens:
 
 1. restate every affected closed period;
 2. post an adjustment in the current period;
 3. publish both originally reported and restated values;
 4. defer to a source-provided authoritative balance.
 
-There is no universally correct policy. Finance, regulatory, and operational users may require different views, but those views must be named and governed.
+There is no universally correct choice. Finance, regulatory, and operational users may need different views, but each view should have a clear name and owner.
 
 ### Load pattern
 
-An incremental job needs a lookback or change feed, not only `source_timestamp > max_loaded_timestamp`.
+An incremental job needs a change feed or a window that looks back into already processed time. Reading only records newer than the last load can miss a record that arrives late with an old source timestamp.
 
 ```sql
 -- Pseudocode: deduplicate by stable event identity before merging.
@@ -103,15 +122,15 @@ when not matched then
   insert (...);
 ```
 
-`MERGE` is only a mechanism. Correctness comes from a stable business identity, deterministic revision ordering, historical dimension lookup, and a rule for source deletes or reversals.
+`MERGE` is only the database operation. Correctness depends on a stable event identity, an unambiguous revision order, the historical dimension lookup, and rules for deletes and reversals.
 
 ## Late-arriving dimensions
 
-A late-arriving dimension occurs when a fact references an entity whose descriptive row is not yet available, or whose corrected history arrives after facts were keyed.
+A **late-arriving dimension** happens when a fact names an entity before its descriptive row arrives, or when corrected dimension history arrives after facts already received their keys.
 
 ### Unknown member versus inferred member
 
-These solve different problems:
+The following rows solve different problems:
 
 | Pattern | Meaning | Key behavior | Later action |
 |---|---|---|---|
@@ -119,7 +138,7 @@ These solve different problems:
 | Not applicable member | This dimension does not apply to the fact | Shared, explicit sentinel key | No reconciliation expected |
 | Inferred member | The natural key is known, but attributes have not arrived | Create a unique surrogate key for that natural key | Fill attributes later, usually as Type 1 |
 
-If a completion contains user ID `U-99` but the user feed is late, do not map it to the same generic unknown user used for every missing ID. Create an inferred row:
+If a completion contains user ID `U-99` but the user feed has not arrived, the identity is known even though the description is missing. Do not map it to the generic unknown user shared by unrelated facts. Create a temporary **inferred member** specifically for `U-99`:
 
 ```text
 user_sk        78123
@@ -132,13 +151,13 @@ valid_to       9999-12-31
 is_current     true
 ```
 
-The fact immediately points to `78123`. When the user row arrives, populate that same version with a Type 1 completion if no earlier history is required. This avoids rekeying every fact that arrived first.
+The fact can immediately point to key `78123`. When the user feed arrives, fill in that same row if no earlier history is required. The fact key does not need to change.
 
 ### Grain of an inferred row
 
 > **One inferred dimension row represents one specifically identified business entity whose descriptive attributes are pending.**
 
-It is not one row per missing event and not one shared row for all unknown entities.
+It is not one row for every missing event, and it is not one shared row for every unknown entity.
 
 ### When the arriving row reveals history
 
@@ -152,34 +171,34 @@ Possible repair:
 4. rebuild affected aggregates and semantic caches;
 5. retain lineage showing the restatement run.
 
-This is a controlled historical repair, not a routine Type 1 fill.
+This is a controlled repair of history, not a routine update of missing labels.
 
-## Retroactive dimension changes
+## Advanced: retroactive dimension changes
 
-A source may report today that an attribute became valid last month. The warehouse then knows both:
+A source may report today that an attribute became valid last month. The warehouse must then distinguish:
 
 - **valid time:** when the statement was true in the business;
 - **system time:** when the warehouse learned and recorded it.
 
 Three common policies are:
 
-### Corrected business history
+### Option 1: corrected business history
 
 Insert or split Type 2 versions at the retroactive boundary and rekey affected facts. Use this when reports are meant to reflect the best current understanding of what was true then.
 
-### As-originally-known history
+### Option 2: as-originally-known history
 
 Do not rekey old facts; retain what the warehouse knew when it published them. Use this when reproducing prior regulatory or operational reports matters more than retrospective correction.
 
-### Both views
+### Option 3: both views
 
-Preserve system-time history or a publication snapshot as well as corrected valid-time history. This approaches bitemporal modeling and costs more in storage, processing, and consumer education. See [Event, state, and temporal modeling](event-state-and-temporal-modeling.md).
+Keep both the corrected history and what earlier publications showed. This approaches bitemporal modeling and costs more in storage, processing, and user education. See [Event, state, and temporal modeling](event-state-and-temporal-modeling.md).
 
-Document the policy per subject area. “Historical truth” is ambiguous until the organization chooses which clock it means.
+Document the policy for each subject area. “Historical truth” can mean corrected business truth or what the warehouse knew at the time; the organization must choose.
 
 ## Reconciliation workflow
 
-Late-data handling should be observable and repeatable.
+Late-data handling should leave a visible trail and produce the same result when replayed.
 
 ```mermaid
 flowchart LR
@@ -207,7 +226,7 @@ Maintain an exception queue or reconciliation table with:
 - affected partitions and downstream models;
 - reconciliation status and audit run.
 
-## Tests that expose late-data defects
+## Tests that catch late-data problems
 
 ### Referential completeness
 
@@ -256,7 +275,7 @@ Reprocessing the same landed records should produce the same facts, dimensions, 
 | Immutable facts plus adjustments | Strong audit trail | More complex consumer logic |
 | Bitemporal history | Reproduce both valid and known-at-the-time views | More rows, keys, tests, and semantic complexity |
 
-## Modern implementation notes
+## Optional: modern implementation notes
 
 - Keep an immutable or replayable landing layer so historical repairs do not depend on the current source state.
 - CDC reduces extraction delay but does not eliminate out-of-order arrival, missing parents, or retroactive corrections.
@@ -264,6 +283,16 @@ Reprocessing the same landed records should produce the same facts, dimensions, 
 - In lakehouse tables, partition replacement can make historical repair efficient; always derive the affected partition set from business dates, not only load dates.
 - In SAP HANA or Datasphere, time-dependent dimensions and validity associations can express effective dating, but the pipeline still needs deterministic event-time key resolution.
 - Publish data freshness and restatement metadata alongside metrics when users make operational decisions from incomplete periods.
+
+## Beginner review checklist
+
+- [ ] Are event time and processing time stored separately?
+- [ ] Does the fact use the business date rather than the load date?
+- [ ] Is the dimension version selected using the event time?
+- [ ] When identity is known but attributes are missing, is there one inferred member for that entity?
+- [ ] Is the policy for changing old snapshots and reports written down?
+- [ ] Can the pipeline replay the same input without creating duplicates?
+- [ ] Are affected facts, snapshots, aggregates, and caches reconciled together?
 
 ## Related patterns
 

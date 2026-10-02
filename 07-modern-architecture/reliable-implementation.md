@@ -1,12 +1,16 @@
 # Reliable Dimensional Implementation
 
-A correct model can still fail if its pipeline duplicates events, loses deletes, assigns the wrong historical key, or cannot replay a backfill. Reliability means that repeated processing produces explainable results and that every published row can be traced to source evidence and transformation logic.
+A well-designed star can still produce a wrong dashboard if the loading pipeline duplicates events, misses deletes, or links a sale to the wrong customer version.
 
-Kimball's ETL chapters emphasize profiling, CDC, cleansing, deduplication, surrogate-key management, late-data handling, restart/recovery, lineage, and version control. Modern ELT tools change where this work runs; they do not remove the responsibilities.
+Consider a payment service that sends payment `P-42` twice because the first delivery timed out. A reliable pipeline recognizes both messages as the same payment and publishes one fact row. If the job fails halfway through and runs again, the result is still one row. This safe-to-retry behavior is called **idempotency**.
 
-## The reliability contract
+More generally, a reliable implementation gives the same explainable result when the same accepted input is processed again. It can also trace each published row back to source data and the transformation rules that produced it.
 
-For each model, document:
+Kimball's extract-transform-load (ETL) chapters emphasize profiling, change data capture (CDC), cleansing, deduplication, surrogate-key management, late-data handling, restart/recovery, lineage, and version control. Modern extract-load-transform (ELT) tools change where this work runs; they do not remove the responsibilities.
+
+## Start by writing the reliability contract
+
+For each model, answer these questions before choosing an incremental loading technique:
 
 ```text
 business process        What is measured?
@@ -21,7 +25,7 @@ restart unit            What can be safely rerun?
 publication rule        When is output complete enough for consumers?
 ```
 
-Without this contract, an “incremental model” is merely a fast query with undefined failure behavior.
+Without these answers, an “incremental model” may be fast but nobody knows what should happen after a retry, late record, correction, or delete.
 
 ## Idempotency
 
@@ -31,7 +35,7 @@ An operation is idempotent when applying the same accepted input again produces 
 
 > Retry must be safe.
 
-Idempotency does not mean every job is insert-only. It means stable input identity and deterministic transformation prevent duplicate or conflicting results.
+Idempotency does not mean every job only inserts rows. It means the pipeline can recognize the same input and apply one predictable rule, preventing duplicate or conflicting results.
 
 ### Transaction fact example
 
@@ -51,6 +55,15 @@ Before loading:
 
 Do not use ingestion timestamp alone as identity. A replay has a new ingestion timestamp but is still the same business event.
 
+For example, these messages should normally become one fact row:
+
+| `payment_event_id` | `ingested_at` | `amount` | Meaning |
+|---|---|---:|---|
+| `P-42` | 10:01 | 80.00 | First delivery |
+| `P-42` | 10:04 | 80.00 | Retry of the same payment |
+
+The stable event ID tells the pipeline they are the same event. The changing ingestion time only tells us when each copy arrived.
+
 ### Snapshot example
 
 For account-day balances:
@@ -63,7 +76,7 @@ Rebuilding one date partition should replace or merge exactly that declared popu
 
 ## Change data capture
 
-CDC reports inserts, updates, and deletes from source storage. It is an extraction mechanism, not automatically a business-event model.
+CDC reports inserts, updates, and deletes from source storage. It tells us what physically changed in a source table; it does not automatically tell us what the change means to the business.
 
 ```mermaid
 flowchart LR
@@ -85,7 +98,7 @@ An update to an order row might mean:
 - accumulation of a milestone;
 - physical maintenance with no analytical meaning.
 
-Translate source changes into business semantics before choosing a target pattern.
+Decide what a source change means before choosing how to store it analytically.
 
 ### CDC completeness questions
 
@@ -101,27 +114,29 @@ Retain a restart checkpoint only after the target transaction and reconciliation
 
 ## Incremental loading patterns
 
+An incremental load processes only data that may have changed instead of rebuilding everything. The right pattern depends on how late data, corrections, and deletes behave.
+
 ### High-water mark
 
-Read rows beyond the last successfully processed source position. Prefer a monotonically increasing source commit sequence over a mutable business timestamp.
+Read rows after the last successfully processed source position. A source commit sequence that only moves forward is safer than a business timestamp that users or applications can edit.
 
 Risk: late or backdated records may fall behind the watermark. Add an overlap window and deterministic deduplication, or use CDC with reconciliation.
 
 ### Sliding lookback
 
-Reprocess recent business dates or update timestamps.
+Reprocess a recent window, such as the last seven business dates, on every run.
 
 Risk: a fixed window silently misses anything later than the window. Monitor lateness distribution and maintain an exception/backfill path.
 
 ### Partition replacement
 
-Rebuild complete affected date partitions from replayable input.
+Rebuild a complete affected slice, such as all facts for one date, from replayable input.
 
 Benefit: deterministic and often simpler than row-level mutation. Risk: the partition date must match business impact; one late event may affect later balance partitions too.
 
 ### Key-based `MERGE`
 
-Upsert rows by stable identity.
+Insert new rows and update existing rows by a stable identity. This combined operation is often called an **upsert**.
 
 ```sql
 merge into dim_customer as d
@@ -145,7 +160,7 @@ Benefit: excellent traceability. Cost: consumers must not accidentally query all
 
 ## Deduplication
 
-Deduplication begins by classifying what looks like a duplicate:
+Two rows that look alike are not necessarily duplicates. First classify why both rows exist:
 
 | Case | Same business event? | Response |
 |---|---|---|
@@ -171,7 +186,7 @@ from (
 where rn = 1;
 ```
 
-Every ordering column needs a defined meaning. If ties remain possible, quarantine them rather than allowing nondeterministic winners.
+Every ordering column needs a defined meaning. If two candidates can still tie, isolate them for investigation instead of choosing a different winner on different runs.
 
 ## Dimension loading
 
@@ -249,7 +264,7 @@ An optional fact surrogate key can simplify ETL row identification, restart, or 
 
 ## Backfills
 
-A backfill deliberately reprocesses historical scope. Treat it as a production migration.
+A **backfill** deliberately rebuilds past data, perhaps after fixing a bug or adding a column. Because it can change published history, treat it like a production migration rather than an ordinary retry.
 
 ### Backfill plan
 
@@ -292,7 +307,7 @@ Classify a source change before propagating it:
 | Column removed | Keep contract temporarily or version consumers |
 | Timestamp precision/time zone changes | Normalize explicitly and reassess uniqueness/windows |
 
-Schema-on-read does not remove schema contracts. It postpones the moment at which incompatible assumptions fail.
+Schema-on-read does not remove the need for a contract. It only delays when incompatible assumptions cause a failure.
 
 ## Source-system changes
 
@@ -349,7 +364,7 @@ A pipeline should restart from a known checkpoint without double-applying work. 
 
 Partial publication is often worse than a delayed publication because facts, dimensions, and aggregates can temporarily disagree.
 
-## Platform notes
+## Optional: platform-specific notes
 
 ### dbt-style transformations
 
@@ -394,6 +409,16 @@ Partial publication is often worse than a delayed publication because facts, dim
 - [Slowly changing dimensions](../03-dimensions/slowly-changing-dimensions.md)
 - [Late-arriving data](../06-time-and-change/late-arriving-data.md)
 - [Layered architectures](layered-architectures.md)
+
+## Beginner review checklist
+
+- [ ] Can a retried event load without creating a second fact row?
+- [ ] Is there a stable identity for each event or entity?
+- [ ] Are late records, deletes, corrections, and reversals handled explicitly?
+- [ ] Can the team rebuild a past period from retained input?
+- [ ] Are fact rows linked to the dimension version valid at event time?
+- [ ] Do counts and important monetary totals reconcile before publication?
+- [ ] Are incomplete facts, dimensions, and aggregates prevented from appearing together?
 
 ## What to remember
 

@@ -1,13 +1,33 @@
 # Failure Modes and Architecture Review
 
-Bad dimensional models often announce themselves through query workarounds: unexplained `DISTINCT`, totals that change after joins, different KPI values across dashboards, or filters that work only for current data. Treat those symptoms as design evidence.
+Many modeling problems first appear as a “strange query problem”: a total doubles after a join, `DISTINCT` seems necessary everywhere, or two dashboards disagree on the same KPI. These are often signs that the row meanings, relationships, history, or metric rules are unclear.
+
+## Start with a broken total
+
+Suppose order `O-10` has two lines and two shipment events:
+
+| Order lines | Amount |
+|---|---:|
+| Keyboard | 80 |
+| Mouse | 20 |
+
+| Shipments | Shipped quantity |
+|---|---:|
+| Monday shipment | 1 |
+| Tuesday shipment | 1 |
+
+A direct join on `order_number` creates four rows: every line matches every shipment. The EUR 100 order total becomes EUR 200. `DISTINCT` may hide some rows, but it does not fix the relationship.
+
+The real fix is to state both grains, summarize each fact to a compatible level, and then combine the summaries. This multiplication of rows after a join is often called **fanout**.
+
+Use the diagnostic table below to find a likely cause. Then read the matching failure mode for the reasoning and repair.
 
 ## Diagnostic table
 
 | Symptom | Likely root cause | Corrective action |
 |---|---|---|
 | Totals multiply after adding a dimension | Many-to-many relationship or non-unique dimension join | Verify both grains; use the right dimension version, lower the fact grain, or introduce a governed bridge |
-| `DISTINCT` appears throughout transformation and BI SQL | Duplicate source delivery, incomplete business identity, mixed grain, or join fanout | Classify each duplicate and fix the earliest responsible contract |
+| `DISTINCT` appears throughout transformation and BI SQL | Duplicate source delivery, incomplete business identity, mixed grain, or rows multiplied by a join | Classify each duplicate and fix the earliest responsible contract |
 | Some measures populate only for certain row types | Several business processes forced into one sparse fact | Split processes into coherent fact tables |
 | Order amounts repeat on every line | Header measure copied to line grain | Keep a header fact or allocate with a governed rule |
 | Historical reports change after a customer update | Type 1 overwrite used for an attribute needing event-time history | Use Type 2 and resolve facts to the valid version |
@@ -23,8 +43,8 @@ Bad dimensional models often announce themselves through query workarounds: unex
 | Same source ID refers to different entities | Natural keys collide across systems or are reused | Namespace source keys and maintain durable warehouse identity |
 | Payment and shipment facts duplicate each other when joined | Direct fact-to-fact join at incompatible grains | Aggregate separately to conformed headers and drill across |
 | Daily and monthly rows coexist with conditional logic | Mixed snapshot grain | Separate facts or enforce a genuinely coherent period-type design |
-| Pipeline retry doubles yesterday's events | No stable business identity or idempotent load | Deduplicate deterministically and upsert/replace by declared grain |
-| Backfill changes unrelated periods | Business date and processing date confused | Scope by business impact and publish a reconciliation manifest |
+| Pipeline retry doubles yesterday's events | No stable business identity or safe-to-retry load | Deduplicate predictably and update/replace by declared grain |
+| Historical rebuild changes unrelated periods | Business date and processing date confused | Limit the affected scope and record before/after reconciliation results |
 | BI tool creates ambiguous paths | Multiple relationships without explicit roles | Use role-playing dimension views/names and one governed path |
 
 ## Failure mode 1: mixed grain
@@ -38,7 +58,7 @@ Bad dimensional models often announce themselves through query workarounds: unex
 
 ### Root cause
 
-The table was designed from available source columns or a report layout rather than one business process and grain sentence.
+The table was copied from available source columns or a report layout instead of being designed around one business process and one row meaning.
 
 ### Fix
 
@@ -58,7 +78,7 @@ Removing `DISTINCT` changes totals, but nobody can explain which rows are false 
 
 ### Root cause
 
-Possibilities include transport retry, legitimate repeated events, source revisions, SCD version fanout, bridge fanout, or missing grain columns.
+The extra row may be a retried message, a legitimate repeated event, a newer source revision, a match to several historical dimension rows, a bridge relationship, or evidence that the declared grain is incomplete.
 
 ### Fix
 
@@ -78,7 +98,7 @@ One fact legitimately relates to several dimension members, but the join is trea
 
 ### Fix
 
-First ask whether a more atomic fact would produce one member per row. If not, use a bridge with an explicit grain. For additive allocation, weights per bridge group should total 1. For impact analysis, intentionally repeat the full fact and label totals non-additive.
+First ask whether a more detailed fact grain would produce one member per row. If not, use a bridge with an explicit grain. To preserve an additive total, weights per bridge group should total 1. For impact analysis, intentionally repeat the full fact and warn that totals across members will overcount.
 
 ## Failure mode 4: joining facts directly
 
@@ -88,7 +108,7 @@ Orders × shipments × payments creates a large intermediate table and inflated 
 
 ### Root cause
 
-Each fact has several rows for the shared key; their join creates a Cartesian multiplication within that key.
+Each fact has several rows for the shared key, so every row on one side matches several rows on the other. The result multiplies rows within that key.
 
 ### Fix
 
@@ -120,7 +140,7 @@ The fact stores a natural key and joins to every historical version, or joins to
 
 ### Fix
 
-At load time, resolve the dimension surrogate key valid at event time and store it in the fact. Ordinary queries join surrogate key to surrogate key. Provide a separate current-perspective view when required.
+When loading the fact, find the dimension version valid when the event happened and store that version's surrogate key. Normal queries then join one fact key to one dimension row. Provide a separate current-perspective view when users need today's classification.
 
 ## Failure mode 7: natural keys used as warehouse relationships
 
@@ -178,7 +198,7 @@ The warehouse provides fields but no governed metric contract.
 
 Centralize the numerator, denominator, filters, currency policy, time behavior, and entity identity. Version it, test it, and reuse it through the semantic layer.
 
-## Additional high-value anti-patterns
+## Other common anti-patterns
 
 ### Designing from one report
 
@@ -188,9 +208,9 @@ A report captures one question and layout. Use it as a requirement source, not t
 
 Freeform or descriptive text bloats facts and bypasses consistent labeling. Put reusable descriptors in dimensions. A degenerate identifier belongs in the fact only when it has no useful dimension attributes.
 
-### Centipede fact tables
+### Too many tiny dimensions
 
-Too many tiny dimensions can make a fact hard to use. Group low-cardinality unrelated flags in a junk dimension; keep genuinely descriptive entities distinct. Do not combine dimensions solely to reduce foreign-key count.
+Too many tiny dimensions can make a fact hard to use. This is sometimes called a **centipede fact table** because it has so many foreign-key “legs.” Group small unrelated flags in a junk dimension, but keep genuinely descriptive business entities separate. Do not combine dimensions only to reduce the key count.
 
 ### Optimizing before correctness
 
@@ -244,7 +264,7 @@ Low latency is not valuable if facts arrive before dimensions, metrics mix close
 ### Relationships and enterprise integration
 
 - [ ] Bridge grain, weights, time validity, and impact/allocated behavior are documented.
-- [ ] Cross-process queries use conformed dimensions and multipass aggregation.
+- [ ] Cross-process queries summarize each fact separately before combining the results through conformed dimensions.
 - [ ] Shared dimensions/facts have a named steward and compatibility contract.
 - [ ] The bus matrix shows current and planned process integration.
 - [ ] Heterogeneous products share only genuinely common facts/attributes.
@@ -267,7 +287,7 @@ Low latency is not valuable if facts arrive before dimensions, metrics mix close
 - [ ] Security and retention apply consistently through dimensions and facts.
 - [ ] Tradeoffs and rejected alternatives are recorded.
 
-## Final quality review rubric
+## Optional: repository quality rubric
 
 Score each dimension from 0 to 2:
 

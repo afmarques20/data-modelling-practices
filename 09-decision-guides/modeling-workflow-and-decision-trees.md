@@ -1,14 +1,25 @@
 # Modeling Workflow and Decision Trees
 
-This chapter is the field procedure. Start here when you have a requirement, a source schema, and a blank page.
+Start here when you have a business request, some source tables, and a blank page.
 
-The goal is not to find a fashionable table shape. It is to create an explicit analytical contract whose rows, joins, history, and measures remain correct under real data.
+The goal is to agree on what each row means, how tables connect, which history matters, and how numbers may be totaled. That agreement is the model's **analytical contract**.
+
+For example, “show sales by product and customer” becomes much easier to design after answering four questions:
+
+| Step | Simple answer |
+|---|---|
+| Which process? | Selling products |
+| What does one row mean? | One product line on one accepted order |
+| Which dimensions describe it? | Date, Product, Customer, Channel |
+| Which facts can be measured? | Quantity, gross amount, discount, net amount |
+
+These are the four steps below. Use the later decision trees only when the design reaches the relevant choice.
 
 ## The four-step dimensional design process
 
 ### 1. Select the business process
 
-A business process is a measurable activity or state in the organization's value chain, not a department or report.
+A business process is something that happens or a state the organization measures. It is not a department name or a dashboard title.
 
 Good process names:
 
@@ -26,7 +37,7 @@ Weak process names:
 - customer 360;
 - executive reporting.
 
-Reports combine processes. Model each process at a coherent grain first.
+A report may combine several processes. Design each process with one clear row meaning first, then combine results safely through shared dimensions.
 
 ### 2. Declare the grain
 
@@ -34,7 +45,7 @@ Write:
 
 > **One row represents ...**
 
-Include the observed entity/event, distinguishing identifiers, and time or lifecycle qualifier.
+Complete the sentence with the event or state being observed, what distinguishes one row from another, and any required time or lifecycle detail.
 
 ```text
 One row represents one submitted attempt by one learner for one assessment.
@@ -42,11 +53,11 @@ One row represents one account's closing balance on one business date in one cur
 One row represents one enrollment attempt moving through the learning lifecycle.
 ```
 
-List what makes two valid rows different. Test that candidate key against real data. If duplicates remain, explain them before changing the key or applying `DISTINCT`.
+List what makes two valid rows different. Those columns form a **candidate key** for the grain. Test it against real data. If duplicate keys remain, inspect examples before adding another column or applying `DISTINCT`.
 
 ### 3. Identify dimensions
 
-Ask who, what, where, when, why, how, and under which business conditions the measurement occurred. Each dimension must be single-valued at the declared grain or deliberately resolved with a bridge.
+Ask who, what, where, when, why, and how the event happened. Each dimension should have one valid value for a fact row. If several values are legitimate, lower the fact grain or model the relationship with a bridge.
 
 For every candidate dimension, ask:
 
@@ -58,7 +69,7 @@ For every candidate dimension, ask:
 
 ### 4. Identify facts
 
-Include numeric observations true at exactly the declared grain. Classify each one:
+Include numeric observations that are true for exactly one fact row. For each measure, record:
 
 - additive;
 - semi-additive and across which dimensions;
@@ -69,9 +80,9 @@ Include numeric observations true at exactly the declared grain. Classify each o
 
 If a measure is header-level while the table is line-level, allocate it with a governed rule or keep it in a separate fact. Do not repeat it silently.
 
-## Before the workshop
+## Before a design session
 
-Bring evidence, not only requirements:
+Bring real examples, not only requirement sentences:
 
 - source data profiles and candidate keys;
 - row counts and duplicate examples;
@@ -109,7 +120,7 @@ flowchart TD
 | Event factless | Row occurrence itself is the measure | A natural numeric measure exists and is being omitted accidentally |
 | Coverage factless | Rows enumerate what could/should happen | Eligibility can be represented more simply and is not queried analytically |
 
-Several patterns can coexist for one value chain. That is a design strength, not duplication, when their grains answer different questions.
+One business journey can use several patterns. For example, orders can have transaction facts for sales and a daily snapshot for open-order backlog. That is useful separation, not duplication, because the rows answer different questions.
 
 ## Decision tree: choose dimension history
 
@@ -130,12 +141,12 @@ Then ask:
 
 - Should old facts retain event-time attribution? Type 2 is likely.
 - Should all history reflect the newest correction? Type 1 may be intended.
-- Do users need both historical and current perspectives? Consider Type 6/7-style views at recognition depth.
+- Do users need both historical and current perspectives? Start with clearly named views for each. Type 6/7 patterns combine these perspectives and are an advanced option.
 - Is the “attribute” actually a new event or periodic state? Use a fact table instead of forcing it into a dimension.
 
-Do not choose Type 2 merely because a value changes. History must have analytical value sufficient to justify more rows, key resolution, and user education.
+Do not choose Type 2 only because a value changes. Use it when old values answer a real historical question and justify the extra rows and more careful key handling.
 
-## Decision tree: resolve keys
+## Advanced: resolve keys
 
 ```text
 Does the source ID uniquely and permanently identify the entity across all sources?
@@ -159,7 +170,7 @@ durable warehouse key  = business entity across source/time changes
 dimension surrogate key = one dimension row or historical version
 ```
 
-## Decision tree: many-to-many relationships
+## Advanced: many-to-many relationships
 
 ```mermaid
 flowchart TD
@@ -181,7 +192,7 @@ fact grain:   one account balance per account per month
 bridge grain: one account-holder-group membership per customer
 ```
 
-Hide bridge complexity behind a tested semantic model or view where possible. Never allow consumers to assume a many-to-many join is additive without an allocation policy.
+Where possible, hide bridge mechanics behind a tested semantic model or view. Make it clear whether a report allocates a total across members or intentionally repeats the full value for impact analysis.
 
 ## Decision tree: event, state, and time
 
@@ -225,7 +236,7 @@ Need auditable source-oriented enterprise integration before marts?
 
 These choices can coexist in layers. Do not expose normalized atomic integration tables to business users and expect every tool to recreate correct analytical joins.
 
-## Decision tree: physical star, wide mart, or semantic graph
+## Optional: physical star, wide mart, or semantic graph
 
 Ask:
 
@@ -235,7 +246,7 @@ Ask:
 - Can the semantic engine safely resolve joins and fanout? A semantic graph can reduce physical denormalization.
 - Does Type 2 history or many-to-many behavior become ambiguous when flattened? Preserve explicit keys/relationships.
 
-Physical shape is an implementation decision. Grain, identity, history, relationship cardinality, and metric behavior are semantic decisions.
+The table shape is an implementation choice. Row meaning, identity, history, one-to-many or many-to-many behavior, and metric rules must remain explicit in every shape.
 
 ## Decision tree: metric storage
 
@@ -250,7 +261,7 @@ Is it expensive but repeatable?                        -> consider governed aggr
 
 Never choose a storage optimization before the metric's mathematical behavior is known.
 
-## Decision tree: architecture layer
+## Optional: architecture layer
 
 | Question | Architectural response |
 |---|---|
@@ -260,7 +271,7 @@ Never choose a storage optimization before the metric's mathematical behavior is
 | Need understandable analytical consumption? | Dimensional Gold/information marts |
 | Need one KPI definition across tools? | Governed semantic/metric layer |
 
-Layer names do not replace model contracts. Every output still needs process, grain, keys, history, and quality expectations.
+Layer names do not answer modeling questions. Every output still needs a process, grain, keys, history rules, and quality expectations.
 
 ## Worked requirement: learning performance
 
@@ -345,7 +356,7 @@ Source counts/totals, uniqueness, referential integrity, period-close tests.
 ## Tradeoffs and rejected alternatives
 ```
 
-Recording rejected alternatives prevents the same unresolved debate from returning during implementation.
+Recording why an alternative was rejected prevents the team from repeating the same debate during implementation.
 
 ## Workshop exit criteria
 

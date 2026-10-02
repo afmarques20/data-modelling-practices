@@ -1,12 +1,21 @@
 # Fact Table Patterns: Events, State, and Lifecycles
 
-A fact table records measurements produced by a business process. Its pattern is not chosen from the report layout or from whichever source table is easiest to copy. It is chosen from the meaning of a row.
+A fact table records something measurable about a business process. The right pattern depends on the question the table must answer.
+
+Take an order as an example. We might want to know:
+
+- **What was sold?** Store one row for each order line. This is a **transaction fact**.
+- **What remained open at each day end?** Store one row for each open order on each day. This is a **periodic snapshot**.
+- **How long did the order take to move from placement to delivery?** Keep one row for the order and update its milestone dates. This is an **accumulating snapshot**.
+- **Which customers were eligible for an offer, even if they bought nothing?** Store the eligible combinations without requiring a numeric amount. This is a **factless fact**.
+
+The same business domain or value chain can use several patterns because its individual processes answer different questions. The source table or dashboard layout should not decide the pattern for us.
 
 Start with one sentence:
 
 > **One row represents...**
 
-Then decide whether that row represents an individual event, state at a regular interval, a lifecycle moving through milestones, or simply the occurrence or eligibility of a dimensional combination.
+Then decide whether that row is an individual event, a regular picture of state, a lifecycle moving through milestones, or simply proof that something happened or was possible.
 
 ## Fast chooser
 
@@ -34,7 +43,7 @@ Examples include:
 - an employee receiving a salary payment;
 - a bank account posting a transaction.
 
-### Mental model
+### A simple way to think about it
 
 **An event happened once; store one row for that event at its most useful atomic grain.**
 
@@ -123,9 +132,9 @@ Atomic events retain the richest dimensional context. They can be rolled up late
 
 ### Tradeoffs
 
-Transaction facts can be very large, and sequence or point-in-time state queries may require more work than they do against snapshots. The reward is fidelity: atomic data supports questions that were not known when the model was designed.
+Transaction facts can be very large, and sequence or point-in-time state queries may require more work than they do against snapshots. The benefit is retained detail: atomic data supports questions that were not known when the model was designed.
 
-### Modern implementation notes
+### Optional: modern implementation notes
 
 - In SQL or dbt-style workflows, test the declared business key for uniqueness at the declared grain, not merely the warehouse row ID.
 - Incremental filters should account for late events and source updates; “load where timestamp is greater than the last timestamp” is often insufficient.
@@ -153,7 +162,7 @@ Events tell you what changed, but many business questions ask what the state was
 
 Reconstructing every historical state from a long event history can be expensive, fragile, or impossible when the source does not provide all changes.
 
-### Mental model
+### A simple way to think about it
 
 **Take a repeatable photograph of each in-scope entity at a standard interval.**
 
@@ -230,7 +239,7 @@ For a monthly average balance, store or derive components whose semantics are cl
 
 Snapshots make trend queries simple but deliberately repeat dimensional keys and sometimes unchanged values. Frequency is an architectural decision: daily gives more temporal precision and more data; monthly is smaller but cannot answer intra-month state questions.
 
-### Modern implementation notes
+### Optional: modern implementation notes
 
 - Generate the expected entity-period population and reconcile it with loaded rows; density makes missing-row tests valuable.
 - Partitioning by snapshot date makes period replacement and retention manageable.
@@ -258,7 +267,7 @@ A business process has a recognizable beginning, a set of important milestones, 
 
 An event table records every transition, but answering “where is each case now and how long has it taken?” repeatedly from events can be cumbersome.
 
-### Mental model
+### A simple way to think about it
 
 **One row travels through the pipeline and accumulates milestone dates and measures.**
 
@@ -336,9 +345,9 @@ The row places all critical milestones for one lifecycle instance side by side. 
 
 ### Tradeoffs
 
-The accumulating snapshot is exceptionally usable for pipeline analysis, but it is mutable. Reprocessing must apply milestones idempotently and cope with events arriving out of order. A classic accumulating row represents the latest known pipeline state; it does not preserve every prior state.
+The accumulating snapshot is especially useful for pipeline analysis, but its rows change. If an input event is retried, processing it again must not alter an already correct result; this property is called **idempotency**. The load must also cope with events arriving out of order. A classic accumulating row represents the latest known pipeline state; it does not preserve every prior state.
 
-### Modern implementation notes
+### Optional: modern implementation notes
 
 - A `MERGE` can implement the lifecycle update, but correctness depends on a stable lifecycle key and monotonic milestone rules, not on the command itself.
 - Keep raw events so the snapshot can be rebuilt and disputed milestone dates can be traced.
@@ -395,12 +404,21 @@ Coverage defines the set of opportunities. Activity defines what actually happen
 ```sql
 select e.date_key, e.customer_key, e.promotion_key
 from fact_promotion_eligibility e
-left join fact_promotion_response r
-  on  r.customer_key = e.customer_key
-  and r.promotion_key = e.promotion_key
-  and r.response_date_key between e.date_key and e.date_key + 7
-where r.customer_key is null;
+join dim_date eligible_date
+  on eligible_date.date_key = e.date_key
+where not exists (
+    select 1
+    from fact_promotion_response r
+    join dim_date response_date
+      on response_date.date_key = r.response_date_key
+    where r.customer_key = e.customer_key
+      and r.promotion_key = e.promotion_key
+      and response_date.full_date >= eligible_date.full_date
+      and response_date.full_date < eligible_date.full_date + interval '7 day'
+);
 ```
+
+Date-addition syntax varies by database. The important point is to compare real dates rather than add `7` to a numeric date key such as `20260130`.
 
 The response window is a business rule, not a property of factless tables. It must be governed and named.
 
