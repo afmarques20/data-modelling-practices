@@ -1,80 +1,158 @@
 # Dimensional Modeling: Facts, Dimensions, and Stars
 
-Dimensional modeling turns business measurements into a structure that people can query correctly. Its strength is not a particular diagram shape. Its strength is an explicit measurement grain surrounded by descriptive context with predictable join paths.
+Dimensional modeling organizes data so that analytical questions are easier to ask and harder to answer incorrectly.
 
-## The problem
+The basic idea is simple:
 
-Operational systems are designed to run a business process: place an order, change an address, post a payment, or assign an employee. Their schemas protect transactional integrity and minimize update anomalies. Analytical users ask different questions:
+- put the **measurements** in a fact table;
+- put the **descriptions** around them in dimension tables;
+- connect them in a star shape.
 
-- How did completion rate vary by course, region, and month?
-- Which customer segments adopted a feature after a subscription upgrade?
-- What were daily balances by banking product?
-- How did headcount and salary change by department?
+Before going deeper, look at one small example.
 
-Answering these questions directly from an operational schema often requires long join chains, source-specific rules, and repeated reconstruction of business history. Different analysts can produce different answers while using individually reasonable SQL.
+## Start with a sale
 
-## Mental model
+Imagine a customer buys two keyboards for EUR 80.
 
-Think in business grammar:
+The sale contains two kinds of information:
 
-- **Fact table:** the verb or observation — purchased, attended, paid, held a balance.
-- **Dimension table:** the descriptive context — who, what, where, when, why, and how.
-- **Star schema:** one measurement process connected directly to the dimensions that describe it.
+| Kind of information | Examples |
+|---|---|
+| What we want to measure | quantity `2`, sales amount `80` |
+| How we want to describe or group it | customer, keyboard, store, date, promotion |
 
-The fact table is not simply “the large table,” and a dimension is not simply “the small table.” Their roles are semantic.
+In a dimensional model:
 
-## Grain
+- the quantity and amount go into a **sales fact table**;
+- customer details go into a **customer dimension**;
+- product details go into a **product dimension**;
+- calendar details go into a **date dimension**.
 
-Every fact table starts with:
+```mermaid
+flowchart LR
+    C[Customer dimension<br/>name, segment, country] --- F[Sales fact<br/>quantity, sales amount]
+    P[Product dimension<br/>name, brand, category] --- F
+    D[Date dimension<br/>day, month, quarter, year] --- F
+    S[Store dimension<br/>store, city, region] --- F
+```
 
-> **One row represents one precisely defined business event, periodic state, or lifecycle instance.**
+The fact table answers **how much?** or **how many?** The dimensions answer **who?**, **what?**, **where?**, and **when?**
 
-Every dimension also has a grain:
+That is the heart of dimensional modeling.
 
-> **One row represents one entity, profile, date, category, or historical version of one of those things.**
+## The problem it solves
 
-For an e-commerce sales star:
+Operational systems are built to run day-to-day work:
 
-> One fact row represents one product line on one placed order.
+- place an order;
+- change a customer's address;
+- post a payment;
+- enroll a learner;
+- assign an employee to a department.
 
-For its Type 2 customer dimension:
+Their databases are usually good at saving one change safely and quickly. They are not always easy to use for questions such as:
 
-> One dimension row represents one historically valid version of one customer.
+- How did course completion rate change by region and month?
+- Which customer segments used a new feature?
+- What was the account balance at the end of each day?
+- How did headcount change by department?
 
-The star therefore does not have one universal table grain. It has a central fact grain and compatible dimension grains. The fact's foreign key selects the single dimension member or historical version valid for that observation.
+Answering those questions directly from an application database may require many joins, knowledge of source-specific codes, and repeated logic. Two analysts can write reasonable SQL and still produce different answers.
 
-See [Grain](grain.md) before choosing columns.
+A dimensional model creates a clearer analytical layer between source systems and reports.
 
-## Model
+## The three building blocks
 
-### A simple order-line star
+### Fact table
+
+A fact table records a business event or state that can be measured.
+
+Examples:
+
+- one product sold;
+- one assessment attempt submitted;
+- one payment made;
+- one account balance at the end of a day.
+
+A fact table usually contains:
+
+- keys that connect to dimensions;
+- numeric measurements such as quantity, amount, duration, or count;
+- sometimes a business identifier such as an order number.
+
+### Dimension table
+
+A dimension table describes the people, objects, places, dates, or categories involved in the fact.
+
+Examples:
+
+- Customer: name, segment, city, country;
+- Product: name, brand, category;
+- Course: title, subject, difficulty;
+- Date: day, week, month, quarter, fiscal year.
+
+Dimensions contain the labels people use to filter and group a report.
+
+### Star schema
+
+A star schema is one fact table connected directly to its dimensions.
+
+The name comes from the visual shape: the fact is in the center and the dimensions surround it.
+
+> A star schema is not valuable because it looks like a star. It is valuable because the path from a business question to the measurement is clear.
+
+## Grain: what does one row mean?
+
+Before choosing columns, define the **grain**:
+
+> **One row represents ...**
+
+For an order-line fact:
+
+> One row represents one product line on one placed order.
+
+Suppose order `1001` contains two products:
+
+| order_number | line_number | product | quantity | net_amount |
+|---|---:|---|---:|---:|
+| 1001 | 1 | Keyboard | 2 | 80.00 |
+| 1001 | 2 | Mouse | 1 | 25.00 |
+
+The grain is one **order line**, not one order. Order `1001` therefore has two valid rows.
+
+This matters because every dimension and every measurement must make sense for one order line:
+
+- Product makes sense: each line has one product.
+- Quantity makes sense: it measures one line.
+- Customer makes sense: the order has one customer, so that customer can be repeated on its lines.
+- Total order shipping cost does **not** automatically make sense: copying EUR 10 onto both lines would incorrectly produce EUR 20 when summed.
+
+Defining grain first prevents many duplicate and wrong-total problems. Read [Grain](grain.md) for the full treatment.
+
+## A simple order-line star
 
 ```mermaid
 erDiagram
-    DIM_DATE ||--o{ FACT_ORDER_LINE : ordered_on
-    DIM_CUSTOMER ||--o{ FACT_ORDER_LINE : purchased_by
-    DIM_PRODUCT ||--o{ FACT_ORDER_LINE : contains
-    DIM_CHANNEL ||--o{ FACT_ORDER_LINE : placed_through
-    DIM_PROMOTION ||--o{ FACT_ORDER_LINE : attributed_to
+    DIM_DATE ||--o{ FACT_ORDER_LINE : "describes date"
+    DIM_CUSTOMER ||--o{ FACT_ORDER_LINE : "describes customer"
+    DIM_PRODUCT ||--o{ FACT_ORDER_LINE : "describes product"
+    DIM_CHANNEL ||--o{ FACT_ORDER_LINE : "describes channel"
 
     FACT_ORDER_LINE {
-        bigint order_number_DD
-        int order_line_number
-        int order_date_key_FK
-        bigint customer_key_FK
-        bigint product_key_FK
-        int channel_key_FK
-        int promotion_key_FK
+        string order_number
+        int line_number
+        int date_key
+        int customer_key
+        int product_key
+        int channel_key
         decimal quantity
         decimal gross_amount
         decimal discount_amount
         decimal net_amount
-        decimal cost_amount
     }
 
     DIM_CUSTOMER {
-        bigint customer_key_PK
-        string durable_customer_id
+        int customer_key
         string customer_name
         string segment
         string city
@@ -82,391 +160,458 @@ erDiagram
     }
 
     DIM_PRODUCT {
-        bigint product_key_PK
-        string source_product_id
+        int product_key
         string product_name
         string brand
         string category
-        string department
     }
 ```
 
-The order number remains in the fact as a degenerate dimension because it identifies the business transaction but has no useful collection of descriptive attributes of its own. The product hierarchy is flattened into `dim_product` so consumers can filter and group without traversing a chain of lookup tables.
+The fact stores keys such as `product_key`. The product dimension turns that key into useful descriptions such as “Mechanical Keyboard,” “Acme,” and “Accessories.”
 
-### Fact-table anatomy
+### A small data example
+
+`fact_order_line`:
+
+| order_number | date_key | customer_key | product_key | quantity | net_amount |
+|---|---:|---:|---:|---:|---:|
+| 1001 | 20261001 | 18 | 501 | 2 | 80.00 |
+| 1001 | 20261001 | 18 | 734 | 1 | 25.00 |
+
+`dim_product`:
+
+| product_key | product_name | category |
+|---:|---|---|
+| 501 | Mechanical Keyboard | Accessories |
+| 734 | Wireless Mouse | Accessories |
+
+`dim_customer`:
+
+| customer_key | customer_name | segment |
+|---:|---|---|
+| 18 | Northwind Labs | Enterprise |
+
+To calculate sales by category, join the fact to `dim_product`, group by `category`, and sum `net_amount`.
+
+```sql
+select
+    p.category,
+    sum(f.net_amount) as net_sales
+from fact_order_line f
+join dim_product p
+  on f.product_key = p.product_key
+group by p.category;
+```
+
+The dimension provides the category. The fact provides the amount.
+
+## What belongs in a fact table?
 
 A fact table normally contains:
 
-- foreign keys to dimensions;
-- degenerate business identifiers when useful for filtering or drill-through;
-- numeric measurements observed at the declared grain;
-- sometimes a warehouse row key used for ETL operations;
-- audit metadata when it materially supports lineage or quality analysis.
+- **dimension keys**, such as `customer_key` and `product_key`;
+- **measurements**, such as quantity, revenue, cost, or duration;
+- **business identifiers** when useful, such as an order or invoice number;
+- limited audit information when it helps trace the data load.
 
-Facts tend to be **narrow and long**: relatively few columns, many rows. The row count alone is not what makes a table a fact.
+Fact tables are often **long and narrow**: many rows, but not necessarily many columns.
 
-### Dimension-table anatomy
+The row count is not what makes a table a fact. Its purpose does: it records measurements at a declared grain.
+
+## What belongs in a dimension table?
 
 A dimension normally contains:
 
-- a warehouse surrogate primary key;
-- one or more source or durable business identifiers;
-- human-readable labels;
-- grouping, filtering, sorting, and hierarchy attributes;
-- governance classifications and derived descriptive attributes;
-- historical control columns when Type 2 behavior is required.
+- a warehouse key;
+- the source's business identifier;
+- clear names and descriptions;
+- attributes used for filtering and grouping;
+- hierarchy columns such as category and department;
+- history columns when old versions must be kept.
 
-Dimensions tend to be **wide and descriptive**. Repeating country, category, or department labels is intentional when it makes the analytical interface simpler and semantically stable.
+Dimensions are often **wide and descriptive**. It is normal for many products to repeat the same brand or category label. That controlled repetition makes the model easier to use.
 
-### Foreign keys
+## How the keys connect the tables
 
-Each ordinary dimension role should be single-valued for one fact row. Fact foreign keys should normally be non-null and resolve to a dimension row. Use explicit members such as “Unknown,” “Not applicable,” or “Not yet occurred” instead of a null key whose meaning varies across tools.
-
-If several dimension members legitimately apply to one fact, do not choose one arbitrarily or attach several foreign-key columns with unclear semantics. Reconsider the grain or use a governed [bridge](../04-relationships/bridges-and-many-to-many.md).
-
-## Facts versus dimensions
-
-The data type does not determine the role.
-
-| Candidate | Usually modeled as | Reason |
-|---|---|---|
-| Sales amount | Fact | Measured at an event grain and aggregated |
-| Quantity | Fact | Numeric observation that participates in calculations |
-| Account balance | Fact | Numeric state at snapshot grain |
-| Product color | Dimension attribute | Describes a product and supports filtering |
-| Customer segment | Dimension attribute | Descriptive grouping, potentially historical |
-| Assessment score | Fact | Measurement of one attempt |
-| Order number | Degenerate dimension in fact | Identifier used to group or trace lines |
-| List price | Depends | Attribute if it describes a product version; fact if the actual offered price is observed per line |
-| Age | Depends | Often derived at query time; an age band may be a dimension attribute or mini-dimension member |
-
-A useful test:
-
-- If users **sum, average, minimize, maximize, or otherwise calculate** it at the fact grain, it is likely a fact.
-- If users **filter, group, label, or navigate** by it, it is likely a dimension attribute.
-
-Some values serve both roles. Store each only when its semantics are explicit. The current product list price is not interchangeable with the transaction's actual unit price.
-
-## Why a star works
-
-### Query paths are predictable
-
-Most questions follow:
+A fact row stores a foreign key for each dimension role:
 
 ```text
-filter dimensions -> join to one fact -> aggregate measures -> group by dimension attributes
+fact_order_line.product_key  -> dim_product.product_key
+fact_order_line.customer_key -> dim_customer.customer_key
+fact_order_line.date_key     -> dim_date.date_key
 ```
 
-Users do not need to understand the source application's normalized join network.
+The dimension key is often a warehouse-generated **surrogate key**. This protects the model from source IDs that change or collide and lets the warehouse keep several historical versions of one customer or product.
 
-### Business meaning is reusable
+For now, remember:
 
-“Product category,” “customer country,” and “fiscal month” are defined in governed dimensions rather than reconstructed in each report. Conformed dimensions can carry those definitions across several fact tables.
+> The fact stores the key. The dimension stores the description.
 
-### Aggregation is controllable
+The [Keys](keys.md) chapter explains business, durable, and surrogate keys in depth.
 
-The central fact declares the measurement grain, and each measure declares its aggregation behavior. The model makes it easier to detect invalid operations such as summing balances across days or averaging row-level percentages.
+If a dimension value is missing, use a clear member such as “Unknown” or “Not applicable” rather than a null key with unclear meaning.
 
-### History is preserved deliberately
+If one fact genuinely relates to several dimension members, such as an employee with several skills, the relationship needs special handling. Revisit the grain or use a [bridge table](../04-relationships/bridges-and-many-to-many.md).
 
-Surrogate dimension keys allow a historical fact to continue pointing to the customer, employee, or product version that applied when the fact occurred. Historical correctness is designed rather than inferred from the source's current state.
+## Fact or dimension?
 
-### The model can extend gracefully
+The data type does not decide. A number is not automatically a fact.
 
-You can add:
+| Value | Usually modeled as | Why |
+|---|---|---|
+| Sales amount | Fact | It is measured and summed |
+| Quantity | Fact | It is measured for one event |
+| Account balance | Fact | It is a numeric state at a point in time |
+| Product color | Dimension attribute | It describes a product |
+| Customer segment | Dimension attribute | It groups customers |
+| Assessment score | Fact | It measures one attempt |
+| Order number | Identifier kept in the fact | It helps trace or group order lines |
+| Actual selling price | Fact | It was observed for one sale line |
+| Current list price | Often a dimension attribute | It describes the current product offer |
 
-- a new fact valid at the existing grain;
-- a new dimension whose member is single-valued for each fact row;
-- a new descriptive dimension attribute;
-- a new fact table for a separate business process.
+Use this simple test:
 
-These additions need not change the meaning of existing queries.
+- If users **calculate** with it — sum, average, minimum, maximum — it is probably a fact.
+- If users **filter, group, or label** with it, it is probably a dimension attribute.
 
-## Worked examples
+Some values can play both roles. The question is always: what does the value mean at this grain?
+
+## How a star answers a question
+
+Question:
+
+> What were monthly net sales for Enterprise customers buying Accessories?
+
+The model handles it in four steps:
+
+```mermaid
+flowchart LR
+    A[Filter customer dimension<br/>segment = Enterprise] --> C[Find matching fact rows]
+    B[Filter product dimension<br/>category = Accessories] --> C
+    C --> D[Sum net_amount]
+    E[Group through date dimension<br/>by month] --> D
+```
+
+In plain language:
+
+1. find customers in the Enterprise segment;
+2. find products in the Accessories category;
+3. use their keys to select the relevant sale rows;
+4. sum `net_amount` and group it by month.
+
+This predictable pattern is a major reason star schemas are easy for BI tools and analysts to use.
+
+## Why a star works well
+
+### Fewer possible join paths
+
+Dimensions connect directly to the fact. Users do not need to understand the application's full network of tables.
+
+### Shared business descriptions
+
+“Product category,” “customer country,” and “fiscal month” are defined once in dimensions instead of being recreated in every dashboard.
+
+### Safer totals
+
+The fact has one declared grain, and each measure has an aggregation rule. This makes it easier to spot mistakes such as summing account balances across several days.
+
+### Intentional history
+
+If a customer moves to a new segment, the warehouse can either:
+
+- overwrite the old value when only the current segment matters; or
+- create a new customer version when historical segment analysis matters.
+
+This choice is covered in [Slowly changing dimensions](../03-dimensions/slowly-changing-dimensions.md).
+
+### Room to grow
+
+A well-designed star can usually accept:
+
+- another measurement that is valid at the same grain;
+- another dimension that has one value for each fact row;
+- another descriptive dimension attribute.
+
+If a new requirement has a different grain, create another fact table instead of changing the meaning of the existing one.
+
+## Four examples from different domains
 
 ### Learning analytics
 
-**Fact grain**
-
-> One row represents one learner's one submitted assessment attempt.
+> One fact row represents one learner's submitted attempt for one assessment.
 
 | Dimensions | Facts |
 |---|---|
-| Learner, assessment, course, completion date, device, organization | score points, possible points, duration seconds, attempt count |
+| Learner, assessment, course, submission date, device | score points, possible points, duration seconds, attempt count |
 
-Course completion is a different business event and should not be forced into the same row. Both facts can share Learner, Course, Date, and Organization dimensions.
+A course completion is a different event. Keep it in another fact table, even though both facts can share Learner, Course, and Date dimensions.
 
 ### SaaS product usage
 
-**Fact grain**
-
-> One row represents one tracked feature-use event by one user within one account.
+> One fact row represents one tracked feature-use event by one user in one account.
 
 | Dimensions | Facts |
 |---|---|
-| User, account, feature, event date/time, client application, plan at event time | event count, duration, bytes processed |
+| User, account, feature, event date/time, plan | event count, duration, bytes processed |
 
-Subscription invoice lines and daily licensed-seat counts belong to different fact tables. Usage, billing, and subscription state can be compared after separate aggregation through conformed Account, Plan, Product, and Date dimensions.
+Invoices and daily seat counts have different row meanings, so they belong in separate facts.
 
 ### HR headcount
 
-**Fact grain**
-
-> One row represents one employee assignment at calendar month-end.
+> One fact row represents one employee assignment at the end of one month.
 
 | Dimensions | Facts |
 |---|---|
-| Employee version, position, department, manager, location, month-end date | headcount count, full-time-equivalent, base salary amount |
+| Employee version, position, department, location, month | headcount count, full-time equivalent, base salary |
 
-If an employee can hold two simultaneous assignments, using “employee-month” grain would collapse meaningful detail. Employee-assignment-month is safer.
+If one employee can hold two assignments, “one employee per month” is too broad. Use employee-assignment-month.
 
 ### Banking balances
 
-**Fact grain**
-
-> One row represents one account in one currency at the close of one business date.
+> One fact row represents one account in one currency at the close of one business date.
 
 | Dimensions | Facts |
 |---|---|
-| Account, product, customer relationship, currency, branch, business date | ledger balance, available balance, accrued interest |
+| Account, product, currency, branch, business date | ledger balance, available balance, accrued interest |
 
-Balances can be summed across accounts on the same date but normally not across dates. That is a measure-semantic rule, covered in [Measures](measures.md).
+Balances can normally be summed across accounts on the same date. They should not normally be summed across several dates. See [Measures](measures.md).
 
-## Dimensional versus normalized models
+## Dimensional and normalized models solve different problems
 
-### What normalization solves
+This distinction is easier to understand through an example.
 
-Normalization organizes data to reduce redundancy and update anomalies:
+An online shop may store products like this:
 
-- **First normal form (1NF):** each field holds a single value from its domain; repeating column groups are removed.
-- **Second normal form (2NF):** the table is in 1NF and non-key attributes depend on the whole candidate key rather than part of a composite key.
-- **Third normal form (3NF):** the table is in 2NF and non-key attributes do not depend transitively on the key through other non-key attributes.
+```text
+product -> subcategory -> category -> department
+```
 
-This abbreviated description is enough for the modeling decision here; normalization theory contains finer formal distinctions.
+Separating those tables is useful in the operational system. If a category name changes, it can be updated in one place. This is part of **normalization**.
 
-An operational schema might separate order, order line, product, brand, category, customer address, geography, and status into many tables. That design avoids updating the same category description in thousands of operational rows.
+For analytics, repeatedly joining all four tables makes every query harder. A dimensional model may copy the useful descriptions into one product dimension:
 
-### What dimensional modeling solves
+```text
+dim_product
+  product_name
+  brand_name
+  category_name
+  department_name
+```
 
-An analytical presentation model accepts controlled redundancy to make measurement queries understandable and consistent. A product dimension may repeat brand, category, and department descriptions on every product row. That is deliberate:
+The repeated labels are deliberate. They make filtering and grouping easier.
 
-- the hierarchy is visible in one place;
-- filters require fewer joins;
-- business labels can be governed together;
-- query tools encounter a predictable star.
+```mermaid
+flowchart LR
+    O[Operational model<br/>many small connected tables] --> I[Cleaning and integration]
+    I --> A[Analytical model<br/>facts and easy-to-use dimensions]
+    A --> R[Reports and metrics]
+```
 
 | Concern | Normalized operational model | Dimensional analytical model |
 |---|---|---|
-| Primary workload | Small inserts and updates | Large scans and aggregations |
-| Organizing idea | Entities and dependencies | Business processes and measurements |
-| Redundancy | Minimized | Controlled for usability |
-| History | Often current operational state | Explicit analytical history |
-| Join paths | Often numerous and application-oriented | Short and business-oriented |
-| Main risk | Update anomalies | Ambiguous grain or incorrect aggregation |
+| Main job | Save and update transactions | Analyze many rows |
+| Organized around | Business entities and update rules | Business events and measurements |
+| Repeated descriptions | Minimized | Allowed when they improve usability |
+| Typical history | Often current application state | Deliberately designed analytical history |
+| Query paths | Can involve many tables | Short and predictable |
 
-Neither model is universally superior. They solve different problems and often coexist:
+Neither design is “better” in every situation. They are tools for different jobs and commonly exist in different layers of the same platform.
 
-```text
-operational applications
-    -> source-fidelity / integration layers
-    -> dimensional presentation models
-    -> semantic metrics and analytics
-```
+### 1NF, 2NF, and 3NF — recognition level
 
-Do not rewrite an application's transactional schema into a star and use it as the operational write model. Do not expose a complex normalized integration layer as the only interface for business analytics merely because it is structurally elegant.
+You do not need a full database-theory course to use this handbook. The short version is:
+
+- **1NF:** each field holds one value; do not create columns such as `phone_1`, `phone_2`, and `phone_3` for a repeating list.
+- **2NF:** in a table with a combined key, every non-key value describes the whole key.
+- **3NF:** non-key values describe the key rather than depending on other non-key values.
+
+These rules help operational databases avoid inconsistent updates. A dimensional presentation model deliberately flattens some stable descriptions because analytical usability is the goal.
 
 ## Star versus snowflake
 
-A **star** connects denormalized dimensions directly to the fact. A **snowflake** normalizes some dimension attributes into subsidiary tables.
+A **star** keeps useful hierarchy labels in one dimension. A **snowflake** separates them into more tables.
 
 ```text
 Star:
+
 fact_order_line -> dim_product
+                     product
                      brand
                      category
                      department
 
 Snowflake:
-fact_order_line -> dim_product -> dim_brand -> dim_category -> dim_department
+
+fact_order_line -> dim_product -> dim_subcategory -> dim_category -> dim_department
 ```
 
 ### Prefer a star when
 
-- the hierarchy is fixed-depth and many-to-one;
-- users frequently filter or group by its levels;
-- repeating descriptions are manageable;
-- the model is a business-facing presentation layer.
+- the hierarchy has clear, fixed levels;
+- users often filter or group by those levels;
+- repeated labels are manageable;
+- the model is intended for reports and self-service analysis.
 
-### Consider limited snowflaking when
+### Consider a snowflake when
 
-- a large subdimension is genuinely shared and independently governed;
-- security, localization, or maintenance has a compelling requirement;
-- the platform's semantic associations hide complexity without creating ambiguous paths;
-- a hierarchy is too complex for simple flattened levels and a specialized pattern is justified.
+- a large subdimension is genuinely shared and managed separately;
+- security or localization gives a strong reason;
+- the hierarchy is too complex for simple fixed columns;
+- the platform hides the extra joins safely.
 
-### Risks of snowflaking
+### Why too much snowflaking hurts
 
-- more joins and more failure points;
-- confusing filter propagation and cardinality;
-- lower usability for self-service;
-- operational normalization leaking into the analytical interface;
-- Type 2 changes in an outrigger causing unexpected version proliferation.
+- more joins are required;
+- users have more paths to understand;
+- BI filter behavior can become confusing;
+- application-level complexity leaks into the analytical model.
 
-Storage savings alone are rarely a strong reason on modern columnar systems. Compression already handles repeated low-cardinality values well.
+Modern columnar databases compress repeated values well, so saving a little storage is rarely enough reason to make the model harder to use.
 
-## Multiple facts and conformance
+## A warehouse usually contains several stars
 
-An enterprise model contains many stars, not one giant star:
+One giant fact table should not contain every business process.
+
+For learning analytics, these are separate facts:
+
+- assessment attempt;
+- course completion;
+- live-session attendance;
+- daily engagement snapshot.
+
+They have different grains, but they can reuse dimensions such as Date, User, Course, and Organization.
 
 ```mermaid
 flowchart LR
-    D1[Conformed Date]
-    U[Conformed User]
-    C[Conformed Course]
-    O[Conformed Organization]
-
-    F1[Assessment Attempt Fact]
-    F2[Course Completion Fact]
-    F3[Session Attendance Fact]
-    F4[Daily Engagement Snapshot]
-
-    D1 --- F1
-    D1 --- F2
-    D1 --- F3
-    D1 --- F4
-    U --- F1
-    U --- F2
-    U --- F3
-    U --- F4
-    C --- F1
-    C --- F2
-    C --- F4
-    O --- F1
-    O --- F2
-    O --- F3
+    D[Shared Date dimension] --- A[Assessment attempts]
+    D --- C[Course completions]
+    D --- S[Session attendance]
+    U[Shared User dimension] --- A
+    U --- C
+    U --- S
+    O[Shared Organization dimension] --- A
+    O --- C
+    O --- S
 ```
 
-The facts are not joined row by row. Each is aggregated independently to matching conformed row headers, such as month, organization, and course, and the aggregate result sets are then aligned. This **drill-across** avoids uncontrolled many-to-many multiplication.
+A shared, consistently defined dimension is called a **conformed dimension**.
 
-See [Conformance and bus architecture](../05-enterprise-modeling/conformance-and-bus-architecture.md).
+To compare completions and attendance by month and organization:
 
-## When to use dimensional modeling
+1. aggregate completions by month and organization;
+2. aggregate attendance by the same month and organization;
+3. align the two result sets.
 
-- A broad analytical audience needs stable, understandable business data.
-- Measures must be sliced consistently across reusable descriptive dimensions.
-- Historical analysis and aggregation correctness matter.
-- Several sources or business processes need a governed presentation layer.
-- BI, semantic models, dashboards, notebooks, or AI consumers need a reliable contract.
+Do not join every completion row directly to every attendance row. That can multiply rows and totals. The safe process is called **drill-across** and is explained in [Conformance and bus architecture](../05-enterprise-modeling/conformance-and-bus-architecture.md).
 
-## When not to use it as the only model
+## When dimensional modeling is a good fit
 
-- A source-fidelity archive must preserve messages exactly as received.
-- A highly normalized application must support transactional writes and constraints.
-- Data scientists need raw high-dimensional signals before business rules are applied.
-- A network, graph, document, or geospatial problem is naturally represented by another model.
-- An auditable integration layer such as Data Vault serves requirements different from presentation.
+Use it when:
 
-Dimensional marts can sit downstream of these structures. Choosing a star for consumption does not require every upstream layer to be dimensional.
+- people need stable, understandable data for analysis;
+- measurements must be filtered consistently by reusable descriptions;
+- historical reporting matters;
+- several sources or business processes need a shared analytical language;
+- BI tools, dashboards, notebooks, or AI systems need a clear data contract.
+
+## When it should not be the only model
+
+Other structures are still useful:
+
+- a raw layer preserves source records exactly as received;
+- a normalized application database supports safe transactional updates;
+- a Data Vault can preserve auditable multi-source history;
+- graph, document, or geospatial data may need a specialized model;
+- data scientists may need detailed raw signals before business rules are applied.
+
+Dimensional models commonly sit downstream of these structures as the easy-to-use analytical layer.
 
 ## Common mistakes
 
-| Mistake | Why it fails | Better approach |
+| Mistake | What goes wrong | Better choice |
 |---|---|---|
-| One universal fact table | Mixes processes and grains; produces sparse, misleading rows | Build one fact per business process and grain |
-| Dimensions designed as source-table copies | Exposes source complexity and conflicting definitions | Design around governed analytical entities and attributes |
-| Descriptive text embedded repeatedly in the fact | Increases inconsistency and weakens history control | Place reusable descriptors in dimensions |
-| Every lookup snowflaked | Creates long, fragile query paths | Flatten stable many-to-one labels into dimensions |
-| Raw fact-to-fact joins | Multiplies rows | Aggregate separately and drill across |
-| Null dimension foreign keys | Makes missing meaning ambiguous | Resolve to explicit sentinel members |
-| Current dimension joined by natural key to historical facts | Rewrites historical context | Use the resolved historical surrogate key |
-| Precomputed report layout used as the model | Encodes one answer rather than a reusable process | Preserve atomic process facts and governed dimensions |
+| Put every event and snapshot in one fact | Rows mean different things and totals become unreliable | Create one fact per business process and grain |
+| Copy source tables directly into dimensions | Source complexity and codes leak into reports | Design clear analytical dimensions |
+| Put product or customer descriptions in the fact | Labels repeat without consistent history control | Put reusable descriptions in dimensions |
+| Split every dimension into many small tables | Queries become hard to understand | Flatten stable labels into the main dimension |
+| Join facts directly to other facts | Rows and totals can multiply | Aggregate each fact first, then align results |
+| Leave dimension keys null | Missing values behave differently across tools | Use explicit “Unknown” or “Not applicable” members |
+| Join historical facts to the current customer row | Old events receive today's description | Store the correct historical dimension key |
+| Design the model from one report layout | The model answers only one question well | Model the underlying business process |
 
 ## Tradeoffs
 
-Dimensional models duplicate descriptive values and require deliberate ETL for key resolution, conformance, and history. In return they reduce semantic duplication across consumers and make valid query paths obvious.
+Dimensional models repeat some descriptive values and require careful data pipelines for keys and history. In return, they make business meaning, safe joins, and common calculations much easier to understand.
 
-A very wide dimension can be easier to query but harder to govern. A highly decomposed model can be easier to maintain internally but harder to use. The architect's job is to place complexity in a governed layer once rather than make every consumer rediscover it.
+The architect's goal is not to remove complexity completely. It is to solve the complexity once in a governed model instead of making every dashboard author solve it again.
 
-## Modern implementation notes — later synthesis
+## Optional: how this maps to modern platforms
 
-The core concepts above are Kimball-derived. The mappings below are modern implementation guidance, not terminology from the 2013 book.
+The physical implementation can change while the core ideas stay the same.
 
-### Physical and logical stars
-
-A star may be:
-
-- physically materialized as dimension and fact tables;
-- exposed as views over a lakehouse or integration model;
-- represented through semantic-model relationships;
-- implemented by platform-specific analytical entities.
-
-Physical shape can vary. Grain, join cardinality, historical keying, and measure behavior cannot remain implicit.
-
-### dbt-style transformations
+### SQL and dbt-style projects
 
 A common flow is:
 
 ```text
 source-aligned staging
-    -> reusable intermediate transformations
-    -> dimensions and facts at explicit grains
-    -> semantic metrics
+    -> cleaned reusable models
+    -> facts and dimensions with declared grains
+    -> governed metrics
 ```
 
-Model names and folders do not make a star. Tests should validate the declared key, referential integrity, accepted sentinel members, and measure reconciliation.
+Folder names do not guarantee a good model. Tests should confirm unique row identity, dimension relationships, and reconciled totals.
 
-### Lakehouse and medallion layers
+### Lakehouse and medallion architectures
 
-Bronze, Silver, and Gold describe quality and transformation layers; dimensional modeling describes a business-facing analytical model. A Gold layer may contain stars, but the concepts are not synonyms. See [Layered architectures](../07-modern-architecture/layered-architectures.md).
+Bronze, Silver, and Gold describe stages of data quality. Dimensional modeling describes the shape and meaning of analytical data. Gold often contains facts and dimensions, but “Gold” and “star schema” are not synonyms.
+
+See [Layered architectures](../07-modern-architecture/layered-architectures.md).
 
 ### SAP HANA Cloud and SAP Datasphere
 
-Calculation Views and Datasphere analytical models can express measures, dimensions, associations, hierarchies, and semantic behavior without requiring every object to be a physically persisted table. Still:
+Calculation Views and Datasphere models can express facts, dimensions, associations, hierarchies, and measures without physically storing every object as a star table.
 
-- expose one unambiguous analytical grain;
-- validate join cardinality rather than trusting a declared cardinality;
-- keep measures on the correct fact source;
-- define aggregation and exception aggregation explicitly;
-- avoid ambiguous paths that can fan out a measure.
+The same questions still apply:
+
+- What does one row represent?
+- Is the relationship really many-to-one?
+- Which source owns each measure?
+- How should the measure aggregate?
+- Could a join duplicate the measure?
+
+A logical model can be dimensional even when the physical tables do not visibly form a star.
 
 ### Semantic layers
 
-The dimensional model supplies reusable entities and measurements. A semantic layer adds governed metric formulas, time behavior, access rules, and business labels. It should not be asked to repair mixed grain or invalid relationships underneath. See [Semantic layer and metrics](../07-modern-architecture/semantic-layer-and-metrics.md).
+A semantic layer adds shared metric formulas, business labels, time rules, and access rules. It works best on top of data whose grain and relationships are already correct. It cannot reliably repair a mixed-grain fact table.
 
-## Design-review checklist
+See [Semantic layers and governed metrics](../07-modern-architecture/semantic-layer-and-metrics.md).
 
-- [ ] Each fact represents one named business process
-- [ ] Every fact and dimension has a written grain
-- [ ] Each ordinary fact-to-dimension relationship is many-to-one
-- [ ] Descriptive grouping attributes live in dimensions
-- [ ] Measures are valid at the fact grain and have defined aggregation behavior
-- [ ] Missing dimension references use governed sentinel members
-- [ ] Fixed, user-facing hierarchies are easy to navigate
-- [ ] Separate facts integrate through conformed dimensions rather than raw fact joins
-- [ ] History requirements are implemented with appropriate keys and change strategies
-- [ ] Physical optimization has not obscured semantic correctness
+## Beginner review checklist
 
-## Related patterns
+Before accepting a dimensional model, check:
 
-- [Grain](grain.md)
-- [Keys](keys.md)
-- [Measures](measures.md)
-- [Fact table patterns](../02-fact-tables/fact-table-patterns.md)
-- [Slowly changing dimensions](../03-dimensions/slowly-changing-dimensions.md)
-- [Dimension patterns](../03-dimensions/dimension-patterns.md)
-- [Bridges and many-to-many relationships](../04-relationships/bridges-and-many-to-many.md)
-- [Conformance and bus architecture](../05-enterprise-modeling/conformance-and-bus-architecture.md)
-- [Layered architectures](../07-modern-architecture/layered-architectures.md)
+- [ ] I can finish the sentence “One fact row represents ...”
+- [ ] Every measurement is true at that grain
+- [ ] Every normal dimension has one matching member for a fact row
+- [ ] Descriptive names and categories live in dimensions
+- [ ] Missing dimension values have clear meanings
+- [ ] Separate business processes use separate fact tables
+- [ ] Measures have clear sum/average/time behavior
+- [ ] Historical reports point to the correct historical dimension version
+- [ ] Shared dimensions have the same meaning across facts
+- [ ] Performance choices have not changed the business meaning
 
 ## What I should remember
 
-1. Facts record measurements of a business process; dimensions provide descriptive context.
-2. The fact grain comes first, and every dimension and measure must be valid at that grain.
-3. A star is a simple business-facing query contract, not merely a visual arrangement of tables.
-4. Normalized operational models optimize controlled writes; dimensional models optimize understandable historical analysis.
-5. Flatten stable, fixed-depth descriptors when that improves usability; snowflake only for a clear reason.
-6. Build multiple process-specific facts and integrate them through conformed dimensions and drill-across.
-7. Modern platforms can virtualize or rearrange the physical star, but they do not remove its semantic obligations.
+1. **Fact tables hold measurements.**
+2. **Dimension tables hold descriptions used to filter and group those measurements.**
+3. **Grain tells you exactly what one row means and must be defined first.**
+4. **A star gives analysts one clear path from descriptions to measurements.**
+5. **Operational and dimensional models solve different problems.**
+6. **Different business processes need different facts, even when they share dimensions.**
+7. **Modern tools can hide or virtualize the star, but they cannot remove the need for clear grain, joins, history, and aggregation rules.**
 
 ## Source basis
 
